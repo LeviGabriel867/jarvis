@@ -109,25 +109,41 @@ PROSODY_PROFILES = [
 _tts_loop = asyncio.new_event_loop()
 
 
+_TTS_FILE = os.path.join(tempfile.gettempdir(), "jarvis_tts.mp3")
+
+
+def _release_tts_file():
+    """Garante que o pygame libere o arquivo de áudio no Windows."""
+    try:
+        pygame.mixer.music.stop()
+        pygame.mixer.music.unload()
+    except Exception:
+        pass
+    # No Windows o unload() pode não liberar o handle imediatamente;
+    # tenta deletar com breve retry para aguardar a liberação.
+    for _ in range(5):
+        try:
+            if os.path.exists(_TTS_FILE):
+                os.unlink(_TTS_FILE)
+            return
+        except PermissionError:
+            time.sleep(0.05)
+
+
 def speak(text):
     """Sintetiza e reproduz texto com voz masculina humanizada via edge-tts."""
     print(f'  [JARVIS] "{text}"')
-    tmp = os.path.join(tempfile.gettempdir(), "jarvis_tts.mp3")
+    _release_tts_file()
     try:
         profile = random.choice(PROSODY_PROFILES)
-        _tts_loop.run_until_complete(_generate_speech(text, tmp, profile))
-        pygame.mixer.music.load(tmp)
+        _tts_loop.run_until_complete(_generate_speech(text, _TTS_FILE, profile))
+        pygame.mixer.music.load(_TTS_FILE)
         pygame.mixer.music.play()
         while pygame.mixer.music.get_busy():
             pygame.time.wait(30)
         pygame.mixer.music.unload()
     except Exception as e:
         print(f"  [JARVIS] Erro no TTS: {e}")
-    finally:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
 
 
 async def _generate_speech(text, output_file, profile):
@@ -410,25 +426,24 @@ def _extract_number(text):
     return None
 
 
+# Comandos críticos que exigem match exato (não usam fuzzy/substring)
+EXACT_MATCH_ONLY = {"desligar_pc", "desligar"}
+
+
 def match_command(text, commands):
     """
     Encontra o comando correspondente ao texto falado.
     Usa fuzzy matching (tolerante a erros) para melhorar reconhecimento.
-    Exceção: desligar_pc exige match exato por segurança.
+    Exceção: comandos em EXACT_MATCH_ONLY exigem match exato por segurança.
     """
     text_lower = text.lower().strip()
 
     # Primeiro, tenta match exato (substring)
     for cmd in commands:
-        if cmd.get("tipo") == "desligar_pc":
-            # desligar_pc DEVE ser exato
+        if cmd.get("tipo") in EXACT_MATCH_ONLY:
+            # Comandos críticos DEVEM ser exatos
             for trigger in cmd["triggers"]:
-                if trigger == text_lower or text_lower == trigger:
-                    if cmd.get("tipo") == "volume":
-                        nivel = _extract_number(text_lower)
-                        if nivel is not None:
-                            cmd = dict(cmd)
-                            cmd["_nivel"] = nivel
+                if text_lower == trigger:
                     return cmd
         else:
             # Outros comandos: substring match
@@ -452,8 +467,8 @@ def match_command(text, commands):
     best_score = 0.5  # Limiar mínimo de 50% de similaridade
 
     for cmd in commands:
-        if cmd.get("tipo") == "desligar_pc":
-            # Pula desligar_pc no fuzzy matching
+        if cmd.get("tipo") in EXACT_MATCH_ONLY:
+            # Pula comandos críticos no fuzzy matching
             continue
 
         for trigger in cmd["triggers"]:
