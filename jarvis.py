@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-JARVIS v2.0 - INFUSER AUTOMATION TRIGGER
-Detecta palmas via fingerprint espectral e dispara automações.
+JARVIS v3.0 - Assistente por Comando de Voz
+Escuta a wake word "Jarvis", responde por voz e executa comandos.
+Comandos e respostas configurados em comandos.json.
 
 Uso:
   python jarvis.py             -> monitoramento normal
-  python jarvis.py --calibrar  -> recalibrar palmas
+  python jarvis.py --listar    -> lista todos os comandos disponiveis
 """
 
 import sys
@@ -14,219 +15,550 @@ import json
 import time
 import webbrowser
 import threading
-import numpy as np
-import sounddevice as sd
+import datetime
+import asyncio
+import tempfile
+import random
+import re
+import subprocess
+import ctypes
 
 # ─────────────────────────────────────────
 # DISPOSITIVO DE AUDIO
 # Execute diagnostico.py para ver os indices disponiveis.
-# None = usa o padrao do Windows. Troque pelo indice do Realtek se necessario.
-# Exemplo: sd.default.device = [1, None]
-AUDIO_DEVICE = 23  # Microfone 2 (Fuxi-H6) - melhor dispositivo detectado
-if AUDIO_DEVICE is not None:
-    sd.default.device = [AUDIO_DEVICE, None]
+# None = usa o padrao do Windows.
+AUDIO_DEVICE = None
 
 # ─────────────────────────────────────────
 # CONFIGURACOES
 # ─────────────────────────────────────────
-# Usa a sample rate nativa do dispositivo selecionado para evitar erros
-_dev_info   = sd.query_devices(AUDIO_DEVICE if AUDIO_DEVICE is not None else sd.default.device[0])
-SAMPLE_RATE = int(_dev_info['default_samplerate'])
-CHUNK_DURATION   = 0.05          # 50ms por chunk
-CHUNK_SIZE       = int(SAMPLE_RATE * CHUNK_DURATION)
-CALIBRATION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jarvis_palmas.json")
-FFT_SIZE         = 2048
+WAKE_WORD = "jarvis"
+LISTEN_TIMEOUT = 10         # segundos esperando frase completa
+COMMAND_PAUSE = 2           # segundos de silencio para finalizar frase
+PHRASE_TIME_LIMIT = 8       # duracao maxima da frase capturada
+LANGUAGE = "pt-BR"
+VOICE = "pt-BR-AntonioNeural"  # voz masculina brasileira (edge-tts)
 
-# Deteccao (ajustados automaticamente na calibracao)
-ENERGY_THRESHOLD     = 0.015     # limiar minimo de energia RMS
-SIMILARITY_THRESHOLD = 0.75      # correlacao coseno minima com o fingerprint
-CLAP_COOLDOWN        = 0.3       # segundos de cooldown entre palmas
-CLAP_WINDOW          = 3.0       # janela de tempo para contar N palmas
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+COMMANDS_FILE = os.path.join(BASE_DIR, "comandos.json")
 
 # ─────────────────────────────────────────
-# AUTOMACOES
+# RESPOSTAS DO SISTEMA (wake word, erros, etc.)
 # ─────────────────────────────────────────
-DAILY_MEET_URL = "https://meet.google.com/rdc-prsm-gtg"
-
-
-def trigger_3_palmas():
-    """3 palmas -> Abre a daily do Google Meet."""
-    print("\n[JARVIS] 3 palmas! Abrindo Daily Meeting...")
-    webbrowser.open(DAILY_MEET_URL)
-    print("   OK - Meet aberto.\n")
-
-
-# Mapeamento: N palmas -> funcao a disparar
-TRIGGERS = {
-    3: trigger_3_palmas,
-    # Adicione mais aqui:
-    # 2: trigger_2_palmas,
-}
+UNKNOWN_COMMAND_RESPONSES = [
+    "Desculpe senhor, não reconheço esse comando.",
+    "Esse comando não está na minha lista senhor.",
+    "Não tenho essa instrução configurada senhor.",
+    "Senhor, não sei executar isso ainda.",
+]
 
 # ─────────────────────────────────────────
-# DSP - FINGERPRINT ESPECTRAL
+# IMPORTACOES COM VALIDACAO
 # ─────────────────────────────────────────
+try:
+    import speech_recognition as sr
+except ImportError:
+    print("ERRO: Biblioteca 'speech_recognition' nao encontrada.")
+    print("  Instale com: pip install SpeechRecognition")
+    sys.exit(1)
 
-def compute_fingerprint(audio_chunk):
-    """FFT normalizada de um chunk de audio."""
-    fft = np.abs(np.fft.rfft(audio_chunk, n=FFT_SIZE))
-    peak = fft.max()
-    return fft / peak if peak > 0 else fft
+try:
+    import pyaudio  # noqa: F401 - necessario para sr.Microphone
+except ImportError:
+    print("ERRO: Biblioteca 'pyaudio' nao encontrada.")
+    print("  Instale com: pip install pyaudio")
+    sys.exit(1)
 
+try:
+    import edge_tts
+except ImportError:
+    print("ERRO: Biblioteca 'edge_tts' nao encontrada.")
+    print("  Instale com: pip install edge-tts")
+    sys.exit(1)
 
-def cosine_similarity(a, b):
-    """Correlacao coseno entre dois vetores."""
-    na, nb = np.linalg.norm(a), np.linalg.norm(b)
-    if na == 0 or nb == 0:
-        return 0.0
-    return float(np.dot(a, b) / (na * nb))
-
-
-def rms_energy(chunk):
-    return float(np.sqrt(np.mean(chunk ** 2)))
-
-
-def best_chunk_in_recording(audio):
-    """Retorna o chunk de maior energia dentro de uma gravacao."""
-    best, best_e = None, 0.0
-    step = CHUNK_SIZE // 2
-    for start in range(0, len(audio) - CHUNK_SIZE, step):
-        chunk = audio[start:start + CHUNK_SIZE]
-        e = rms_energy(chunk)
-        if e > best_e:
-            best_e, best = e, chunk
-    return best
+try:
+    import pygame
+except ImportError:
+    print("ERRO: Biblioteca 'pygame' nao encontrada.")
+    print("  Instale com: pip install pygame")
+    sys.exit(1)
 
 
 # ─────────────────────────────────────────
-# CALIBRACAO
+# MOTOR DE VOZ (TTS) HUMANIZADO
 # ─────────────────────────────────────────
 
-def calibrar():
-    print("\n[JARVIS] MODO CALIBRACAO")
-    print("-" * 40)
-    print("Vou gravar 5 amostras das suas palmas.")
-    print("A cada prompt, bata UMA palma com forca.\n")
+pygame.mixer.init()
 
-    samples = []
-    energies = []
+# Perfis de prosódia — cada fala sorteia um perfil levemente diferente
+# para nao soar sempre igual (rate e pitch aceitos pelo edge-tts)
+PROSODY_PROFILES = [
+    {"rate": "-8%",  "pitch": "+3Hz"},   # calmo, levemente agudo
+    {"rate": "-4%",  "pitch": "+0Hz"},   # ritmo natural, tom neutro
+    {"rate": "-6%",  "pitch": "-2Hz"},   # pausado, tom serio
+    {"rate": "-10%", "pitch": "+5Hz"},   # lento, gentil
+    {"rate": "-2%",  "pitch": "-4Hz"},   # quase normal, mais grave
+]
 
-    for i in range(5):
-        input(f"  -> ENTER e bata a palma #{i + 1}: ")
-        time.sleep(0.08)
 
-        audio = sd.rec(
-            int(SAMPLE_RATE * 0.4),
-            samplerate=SAMPLE_RATE,
-            channels=1,
-            dtype="float32",
+def speak(text):
+    """Sintetiza e reproduz texto com voz masculina humanizada via edge-tts."""
+    print(f'  [JARVIS] "{text}"')
+    tmp = os.path.join(tempfile.gettempdir(), "jarvis_tts.mp3")
+    try:
+        profile = random.choice(PROSODY_PROFILES)
+        asyncio.run(_generate_speech(text, tmp, profile))
+        pygame.mixer.music.load(tmp)
+        pygame.mixer.music.play()
+        while pygame.mixer.music.get_busy():
+            time.sleep(0.05)
+        pygame.mixer.music.unload()
+    except Exception as e:
+        print(f"  [JARVIS] Erro no TTS: {e}")
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+async def _generate_speech(text, output_file, profile):
+    """Gera audio via edge-tts com prosódia variada."""
+    communicate = edge_tts.Communicate(
+        text,
+        VOICE,
+        rate=profile["rate"],
+        pitch=profile["pitch"],
+    )
+    await communicate.save(output_file)
+
+
+# ─────────────────────────────────────────
+# ACOES BUILT-IN
+# ─────────────────────────────────────────
+
+def _speak_response(cmd, default, **kwargs):
+    """Fala uma resposta aleatória do comando, formatando variáveis."""
+    resposta = random.choice(cmd.get("respostas", [default]))
+    speak(resposta.format(**kwargs) if kwargs else resposta)
+
+
+def action_abrir_url(cmd):
+    """Abre uma URL no navegador e depois confirma."""
+    webbrowser.open(cmd["url"])
+    _speak_response(cmd, "Pronto senhor.")
+
+
+def action_hora(cmd):
+    """Informa a hora atual por voz."""
+    agora = datetime.datetime.now().strftime("%H e %M")
+    _speak_response(cmd, "São {hora} senhor.", hora=agora)
+
+
+def action_data(cmd):
+    """Informa a data atual por voz."""
+    hoje = datetime.datetime.now()
+    dias = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+            "sexta-feira", "sábado", "domingo"]
+    meses = ["janeiro", "fevereiro", "março", "abril", "maio", "junho",
+             "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"]
+    data_str = f"{dias[hoje.weekday()]}, {hoje.day} de {meses[hoje.month - 1]} de {hoje.year}"
+    _speak_response(cmd, "Hoje é {data} senhor.", data=data_str)
+
+
+def action_desligar(cmd):
+    """Fala despedida e encerra o JARVIS."""
+    _speak_response(cmd, "Até logo senhor.")
+    os._exit(0)
+
+
+def action_saudacao(cmd):
+    """Responde a uma saudação."""
+    _speak_response(cmd, "Olá senhor.")
+
+
+def action_fechar_programa(cmd):
+    """Fecha um programa pelo nome do processo e depois confirma."""
+    processos = cmd.get("processos", [])
+    for proc in processos:
+        subprocess.run(
+            ["taskkill", "/im", proc, "/f"],
+            capture_output=True,
+            creationflags=0x08000000,  # CREATE_NO_WINDOW
         )
-        sd.wait()
-        audio = audio.flatten()
+    _speak_response(cmd, "Feito senhor.")
 
-        chunk = best_chunk_in_recording(audio)
-        if chunk is None:
-            print("     AVISO: Sinal muito fraco, ignorado.\n")
-            continue
 
-        e = rms_energy(chunk)
-        fp = compute_fingerprint(chunk)
-        samples.append(fp)
-        energies.append(e)
-        print(f"     OK - Capturada (energia RMS: {e:.4f})\n")
+def _set_system_volume(level_0_to_10):
+    """Define o volume do sistema de 0 a 10 via pycaw."""
+    from pycaw.pycaw import AudioUtilities
+    dev = AudioUtilities.GetSpeakers()
+    vol = dev.EndpointVolume
+    scalar = max(0.0, min(1.0, level_0_to_10 / 10.0))
+    vol.SetMasterVolumeLevelScalar(scalar, None)
 
-    if len(samples) < 3:
-        print("ERRO: Poucas amostras validas. Execute novamente.")
+
+def action_volume(cmd):
+    """Define o volume do sistema para o nível especificado (0 a 10)."""
+    nivel = cmd.get("_nivel", 5)
+    try:
+        _set_system_volume(nivel)
+        _speak_response(cmd, "Volume ajustado para {nivel} senhor.", nivel=nivel)
+    except Exception as e:
+        print(f"  [JARVIS] Erro ao ajustar volume: {e}")
+        speak("Não consegui ajustar o volume senhor.")
+
+
+def action_proxima_reuniao(cmd):
+    """Busca a próxima reunião no Google Agenda e abre o Meet."""
+    try:
+        from google_agenda import get_next_meeting
+        meeting = get_next_meeting()
+    except FileNotFoundError as e:
+        print(f"  [JARVIS] {e}")
+        speak("Senhor, o arquivo de credenciais do Google não foi encontrado. Verifique o setup.")
+        return
+    except Exception as e:
+        print(f"  [JARVIS] Erro ao acessar Google Agenda: {e}")
+        speak("Não consegui acessar o Google Agenda senhor.")
         return
 
-    avg_fp = np.mean(samples, axis=0)
-    avg_fp = avg_fp / avg_fp.max()
+    if meeting is None:
+        speak("Senhor, não encontrei nenhuma reunião com link nas próximas horas.")
+        return
 
-    auto_energy = float(min(energies)) * 0.4
+    webbrowser.open(meeting["link"])
+    _speak_response(
+        cmd,
+        "Abrindo a reunião {reuniao} das {horario} senhor.",
+        reuniao=meeting["title"],
+        horario=meeting["start"],
+    )
 
-    data = {
-        "fingerprint": avg_fp.tolist(),
-        "energy_threshold": max(auto_energy, 0.008),
-        "similarity_threshold": SIMILARITY_THRESHOLD,
-        "calibrated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "samples_count": len(samples),
-    }
 
-    with open(CALIBRATION_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+def action_listar_reunioes_hoje(cmd):
+    """Lista as reuniões de hoje com links de videoconferência."""
+    try:
+        from google_agenda import get_today_meetings
+        meetings = get_today_meetings()
+    except FileNotFoundError as e:
+        print(f"  [JARVIS] {e}")
+        speak("Senhor, o arquivo de credenciais do Google não foi encontrado.")
+        return
+    except Exception as e:
+        print(f"  [JARVIS] Erro ao acessar Google Agenda: {e}")
+        speak("Não consegui acessar o Google Agenda senhor.")
+        return
 
-    print(f"OK - Calibracao salva em '{CALIBRATION_FILE}'")
-    print(f"   Limiar de energia: {data['energy_threshold']:.4f}")
-    print("   Execute: python jarvis.py\n")
+    if not meetings:
+        speak("Senhor, não há reuniões com videoconferência agendadas para hoje.")
+        return
+
+    # Fala a lista
+    msg = f"Você tem {len(meetings)} reunião" if len(meetings) == 1 else f"Você tem {len(meetings)} reuniões"
+    msg += " com videoconferência hoje senhor. "
+    for i, m in enumerate(meetings, 1):
+        msg += f"{i}. {m['title']} das {m['start']} às {m['end']}. "
+    speak(msg)
+
+
+def action_reunioes_data(cmd):
+    """Lista reuniões com links de videoconferência para uma data especificada."""
+    try:
+        from google_agenda import get_meetings_for_date
+        # Extrai a referência de data do comando
+        date_reference = cmd.get("_date_ref", "")
+        meetings = get_meetings_for_date(date_reference)
+    except FileNotFoundError as e:
+        print(f"  [JARVIS] {e}")
+        speak("Senhor, o arquivo de credenciais do Google não foi encontrado.")
+        return
+    except Exception as e:
+        print(f"  [JARVIS] Erro ao acessar Google Agenda: {e}")
+        speak("Não consegui acessar o Google Agenda senhor.")
+        return
+
+    if not meetings:
+        speak("Senhor, não há reuniões com videoconferência agendadas para essa data.")
+        return
+
+    # Fala a lista
+    msg = f"Você tem {len(meetings)} reunião" if len(meetings) == 1 else f"Você tem {len(meetings)} reuniões"
+    msg += " com videoconferência nessa data senhor. "
+    for i, m in enumerate(meetings, 1):
+        msg += f"{i}. {m['title']} das {m['start']} às {m['end']}. "
+    speak(msg)
+
+
+def action_bloquear_pc(cmd):
+    """Bloqueia o computador (Windows + L)."""
+    _speak_response(cmd, "Bloqueando o computador senhor.")
+    ctypes.windll.user32.LockWorkStation()
+
+
+def action_desligar_pc(cmd):
+    """Desliga o computador de forma graciosa."""
+    _speak_response(cmd, "Desligando o computador senhor.")
+    subprocess.run(["shutdown", "/s", "/t", "5"], creationflags=0x08000000)
+
+
+# Mapa de tipo -> funcao executora
+ACTION_HANDLERS = {
+    "abrir_url": action_abrir_url,
+    "hora": action_hora,
+    "data": action_data,
+    "desligar": action_desligar,
+    "saudacao": action_saudacao,
+    "fechar_programa": action_fechar_programa,
+    "volume": action_volume,
+    "proxima_reuniao": action_proxima_reuniao,
+    "listar_reunioes_hoje": action_listar_reunioes_hoje,
+    "reunioes_data": action_reunioes_data,
+    "bloquear_pc": action_bloquear_pc,
+    "desligar_pc": action_desligar_pc,
+}
 
 
 # ─────────────────────────────────────────
-# DETECTOR EM TEMPO REAL
+# CARREGAMENTO DE COMANDOS
 # ─────────────────────────────────────────
 
-class JarvisDetector:
-    def __init__(self, cal):
-        self.fingerprint      = np.array(cal["fingerprint"])
-        self.energy_threshold = cal.get("energy_threshold", ENERGY_THRESHOLD)
-        self.sim_threshold    = cal.get("similarity_threshold", SIMILARITY_THRESHOLD)
-        self.clap_timestamps  = []
-        self.last_clap_time   = 0.0
-        self.running          = False
-        self._lock            = threading.Lock()
+def load_commands():
+    """Carrega comandos do arquivo comandos.json."""
+    if not os.path.exists(COMMANDS_FILE):
+        print(f"ERRO: Arquivo de comandos nao encontrado: {COMMANDS_FILE}")
+        print("  Crie o arquivo comandos.json na pasta do projeto.")
+        sys.exit(1)
 
-    def _process_chunk(self, chunk):
-        now    = time.time()
-        energy = rms_energy(chunk)
+    with open(COMMANDS_FILE, encoding="utf-8") as f:
+        commands = json.load(f)
 
-        if energy < self.energy_threshold:
-            return
+    for cmd in commands:
+        tipo = cmd.get("tipo")
+        if tipo not in ACTION_HANDLERS:
+            print(f"  AVISO: Tipo desconhecido '{tipo}' no comando "
+                  f"'{cmd.get('triggers', ['?'])[0]}', ignorado.")
 
-        if now - self.last_clap_time < CLAP_COOLDOWN:
-            return
+    return commands
 
-        fp  = compute_fingerprint(chunk)
-        sim = cosine_similarity(fp, self.fingerprint)
 
-        if sim < self.sim_threshold:
-            return
+# Mapa de palavras faladas para números (o Google Speech transcreve por extenso)
+WORD_TO_NUMBER = {
+    "zero": 0, "um": 1, "uma": 1, "dois": 2, "duas": 2, "três": 3, "tres": 3,
+    "quatro": 4, "cinco": 5, "seis": 6, "meia": 6, "sete": 7,
+    "oito": 8, "nove": 9, "dez": 10,
+}
 
-        with self._lock:
-            self.last_clap_time = now
-            self.clap_timestamps.append(now)
-            self.clap_timestamps = [
-                t for t in self.clap_timestamps if now - t <= CLAP_WINDOW
-            ]
-            count = len(self.clap_timestamps)
 
-        print(f"PALMA #{count}  [sim={sim:.2f} | energia={energy:.4f}]")
+def _extract_number(text):
+    """Extrai um número de 0 a 10 do texto (dígito ou por extenso)."""
+    # Tenta dígito primeiro
+    match = re.search(r'\b(\d{1,2})\b', text)
+    if match:
+        n = int(match.group(1))
+        if 0 <= n <= 10:
+            return n
+    # Tenta por extenso
+    for word, n in WORD_TO_NUMBER.items():
+        if word in text.lower():
+            return n
+    return None
 
-        if count in TRIGGERS:
-            with self._lock:
-                self.clap_timestamps.clear()
-            threading.Thread(target=TRIGGERS[count], daemon=True).start()
 
-    def _audio_callback(self, indata, frames, time_info, status):
-        if status:
-            print(f"AVISO: {status}", flush=True)
-        self._process_chunk(indata[:, 0].copy())
+def match_command(text, commands):
+    """
+    Encontra o comando correspondente ao texto falado.
+    Usa fuzzy matching (tolerante a erros) para melhorar reconhecimento.
+    Exceção: desligar_pc exige match exato por segurança.
+    """
+    from difflib import SequenceMatcher
+
+    text_lower = text.lower().strip()
+
+    # Primeiro, tenta match exato (substring)
+    for cmd in commands:
+        if cmd.get("tipo") == "desligar_pc":
+            # desligar_pc DEVE ser exato
+            for trigger in cmd["triggers"]:
+                if trigger == text_lower or text_lower == trigger:
+                    if cmd.get("tipo") == "volume":
+                        nivel = _extract_number(text_lower)
+                        if nivel is not None:
+                            cmd = dict(cmd)
+                            cmd["_nivel"] = nivel
+                    return cmd
+        else:
+            # Outros comandos: substring match
+            for trigger in cmd["triggers"]:
+                if trigger in text_lower:
+                    if cmd.get("tipo") == "volume":
+                        nivel = _extract_number(text_lower)
+                        if nivel is not None:
+                            cmd = dict(cmd)
+                            cmd["_nivel"] = nivel
+                    elif cmd.get("tipo") == "reunioes_data":
+                        cmd = dict(cmd)
+                        cmd["_date_ref"] = text_lower
+                    return cmd
+
+    # Se não achou com substring, tenta fuzzy matching (similaridade)
+    best_match = None
+    best_score = 0.5  # Limiar mínimo de 50% de similaridade
+
+    for cmd in commands:
+        if cmd.get("tipo") == "desligar_pc":
+            # Pula desligar_pc no fuzzy matching
+            continue
+
+        for trigger in cmd["triggers"]:
+            # Calcula similaridade entre o texto e o trigger
+            score = SequenceMatcher(None, text_lower, trigger).ratio()
+            if score > best_score:
+                best_score = score
+                best_match = cmd
+
+    if best_match:
+        if best_match.get("tipo") == "volume":
+            nivel = _extract_number(text_lower)
+            if nivel is not None:
+                best_match = dict(best_match)
+                best_match["_nivel"] = nivel
+        elif best_match.get("tipo") == "reunioes_data":
+            best_match = dict(best_match)
+            best_match["_date_ref"] = text_lower
+        return best_match
+
+    return None
+
+
+def execute_command(cmd):
+    """Executa a acao de um comando."""
+    handler = ACTION_HANDLERS.get(cmd["tipo"])
+    if handler:
+        handler(cmd)
+    else:
+        speak(f"Tipo de ação '{cmd['tipo']}' não implementado senhor.")
+
+
+def listar_comandos(commands):
+    """Exibe todos os comandos disponiveis."""
+    print("\n  Comandos disponiveis:")
+    print("  " + "-" * 55)
+    for cmd in commands:
+        principal = cmd["triggers"][0]
+        aliases = cmd["triggers"][1:]
+        print(f'  "{principal}"')
+        print(f"    -> {cmd['descricao']}")
+        if aliases:
+            print(f"    Alternativas: {', '.join(aliases)}")
+        respostas = cmd.get("respostas", [])
+        if respostas:
+            print(f"    Respostas possiveis: {len(respostas)}")
+        print()
+
+
+# ─────────────────────────────────────────
+# RECONHECIMENTO DE VOZ
+# ─────────────────────────────────────────
+
+class JarvisAssistant:
+    def __init__(self, commands):
+        self.commands = commands
+        self.recognizer = sr.Recognizer()
+        self.recognizer.dynamic_energy_threshold = True
+        self.recognizer.pause_threshold = COMMAND_PAUSE
+
+        if AUDIO_DEVICE is not None:
+            self.mic = sr.Microphone(device_index=AUDIO_DEVICE)
+        else:
+            self.mic = sr.Microphone()
+
+    def calibrate(self):
+        """Calibra o microfone para o ruido ambiente."""
+        print("  [JARVIS] Calibrando microfone para ruido ambiente...")
+        with self.mic as source:
+            self.recognizer.adjust_for_ambient_noise(source, duration=2)
+        print("  [JARVIS] Calibracao concluida.")
+
+    def listen_loop(self):
+        """Escuta uma frase completa e retorna o texto transcrito."""
+        with self.mic as source:
+            try:
+                audio = self.recognizer.listen(
+                    source,
+                    timeout=LISTEN_TIMEOUT,
+                    phrase_time_limit=PHRASE_TIME_LIMIT,
+                )
+                text = self.recognizer.recognize_google(audio, language=LANGUAGE)
+                return text
+            except sr.WaitTimeoutError:
+                return None
+            except sr.UnknownValueError:
+                return None
+            except sr.RequestError as e:
+                print(f"  [JARVIS] Erro no servico de reconhecimento: {e}")
+                return None
+
+    def extract_command(self, text):
+        """Verifica se a frase contem a wake word e extrai o comando."""
+        text_lower = text.lower().strip()
+        if WAKE_WORD not in text_lower:
+            return None
+
+        # Remove a wake word e pontuacao ao redor para isolar o comando
+        # Ex: "jarvis, entrar em daily" -> "entrar em daily"
+        #     "jarvis entrar em daily"  -> "entrar em daily"
+        parts = re.split(r'jarvis[,.]?\s*', text_lower, maxsplit=1, flags=re.IGNORECASE)
+        if len(parts) > 1 and parts[1].strip():
+            return parts[1].strip()
+
+        # Wake word foi dita sozinha, sem comando
+        return ""
 
     def run(self):
-        print("\n[JARVIS] Online - aguardando palmas...")
-        print("   3 palmas -> Abre Daily Meeting")
-        print("   Ctrl+C para encerrar.\n")
-        self.running = True
-        with sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            blocksize=CHUNK_SIZE,
-            channels=1,
-            dtype="float32",
-            callback=self._audio_callback,
-        ):
+        """Loop principal — escuta frases completas com wake word + comando."""
+        print('\n  [JARVIS] Online - diga "Jarvis" seguido do comando na mesma frase.')
+        print('  [JARVIS] Exemplo: "Jarvis, entrar em daily"')
+        print("  [JARVIS] Ctrl+C para encerrar.\n")
+
+        listar_comandos(self.commands)
+        self.calibrate()
+
+        speak("Sistemas online. Aguardando suas ordens senhor.")
+
+        while True:
             try:
-                while self.running:
-                    time.sleep(0.1)
+                text = self.listen_loop()
+
+                if text is None:
+                    continue
+
+                command_text = self.extract_command(text)
+
+                # Frase sem "Jarvis" — ignora silenciosamente
+                if command_text is None:
+                    continue
+
+                print(f'  [JARVIS] Ouviu: "{text}"')
+
+                # "Jarvis" sozinho, sem comando
+                if command_text == "":
+                    speak("Sim senhor?")
+                    continue
+
+                cmd = match_command(command_text, self.commands)
+                if cmd:
+                    print(f"  [JARVIS] Executando: {cmd['descricao']}")
+                    execute_command(cmd)
+                else:
+                    print(f'  [JARVIS] Comando nao reconhecido: "{command_text}"')
+                    speak(random.choice(UNKNOWN_COMMAND_RESPONSES))
+
+                print()
+
             except KeyboardInterrupt:
-                print("\n[JARVIS] Desligando...\n")
+                speak("Encerrando. Até a próxima senhor.")
+                break
 
 
 # ─────────────────────────────────────────
@@ -234,29 +566,18 @@ class JarvisDetector:
 # ─────────────────────────────────────────
 
 def main():
-    mode = sys.argv[1] if len(sys.argv) > 1 else ""
+    print("=" * 42)
+    print("   JARVIS v3.0  -  ASSISTENTE DE VOZ")
+    print("=" * 42)
 
-    print("=" * 38)
-    print("   JARVIS v2.0  -  INFUSER AUTO")
-    print("=" * 38)
+    commands = load_commands()
 
-    if mode == "--calibrar":
-        calibrar()
+    if "--listar" in sys.argv:
+        listar_comandos(commands)
         return
 
-    if not os.path.exists(CALIBRATION_FILE):
-        print("\nCALIBRACAO NAO ENCONTRADA.")
-        print("Execute primeiro: python jarvis.py --calibrar\n")
-        sys.exit(1)
-
-    with open(CALIBRATION_FILE) as f:
-        cal = json.load(f)
-
-    print(f"   Calibracao de:  {cal.get('calibrated_at', '?')}")
-    print(f"   Amostras usadas: {cal.get('samples_count', '?')}")
-
-    detector = JarvisDetector(cal)
-    detector.run()
+    assistant = JarvisAssistant(commands)
+    assistant.run()
 
 
 if __name__ == "__main__":

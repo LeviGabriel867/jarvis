@@ -1,4 +1,4 @@
 @echo off
 cd /d "%~dp0"
-"C:\Python312\python.exe" "%~dp0jarvis.py"
+python "%~dp0jarvis.py"
 pause
