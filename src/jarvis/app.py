@@ -21,6 +21,7 @@ import random
 import re
 import subprocess
 import ctypes
+import threading
 from difflib import SequenceMatcher
 
 from pathlib import Path
@@ -540,6 +541,7 @@ def listar_comandos(commands):
 
 COMMAND_COOLDOWN = 2.0      # segundos de espera após executar um comando
 DEDUP_WINDOW = 4.0          # segundos para ignorar comando idêntico repetido
+LISTEN_HARD_TIMEOUT = LISTEN_TIMEOUT + PHRASE_TIME_LIMIT + 5  # timeout absoluto do listen
 
 
 KEEPALIVE_INTERVAL = 60     # segundos entre pings do microfone para mantê-lo ativo
@@ -570,19 +572,33 @@ class JarvisAssistant:
         else:
             self.mic = sr.Microphone(sample_rate=SAMPLE_RATE)
 
+    def _terminate_pyaudio(self):
+        """Encerra a instância interna do PyAudio para liberar o dispositivo."""
+        try:
+            if hasattr(self, 'mic') and self.mic is not None:
+                # sr.Microphone armazena a instância em mic.audio
+                pa = getattr(self.mic, 'audio', None)
+                if pa is not None:
+                    pa.terminate()
+        except Exception:
+            pass
+
     def _reinit_audio(self):
         """Reinicializa todo o subsistema de áudio após falha (ex: retorno de suspensão)."""
         print("  [JARVIS] Reinicializando subsistema de áudio...")
-        # Reinicializa pygame mixer (dispositivo de saída)
+        # 1. Fecha o PyAudio antigo para liberar o dispositivo de entrada
+        self._terminate_pyaudio()
+        # 2. Reinicializa pygame mixer (dispositivo de saída)
         try:
             pygame.mixer.quit()
         except Exception:
             pass
+        time.sleep(1)  # aguarda o Windows liberar os dispositivos
         try:
             pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=1024)
         except Exception as e:
             print(f"  [JARVIS] Erro ao reiniciar mixer: {e}")
-        # Recria microfone e recognizer (dispositivo de entrada)
+        # 3. Recria recognizer e microfone com nova instância PyAudio
         self._init_recognizer()
         self._init_microphone()
         print("  [JARVIS] Subsistema de áudio reinicializado.")
@@ -642,28 +658,46 @@ class JarvisAssistant:
     def listen_loop(self):
         """Escuta uma frase completa e retorna o texto transcrito.
 
-        Levanta OSError / Exception se o dispositivo de áudio estiver
-        indisponível (ex: após retorno de suspensão) para que o loop
-        principal possa acionar a reinicialização.
+        Executa o listen() em uma thread separada com timeout absoluto.
+        Se o PyAudio travar (ex: após retorno de suspensão), o timeout
+        real dispara e levanta RuntimeError para acionar a recuperação.
         """
         self._keepalive()
-        with self.mic as source:
-            self._last_listen_time = time.time()
+        result = [None]
+        error = [None]
+
+        def _listen_worker():
             try:
-                audio = self.recognizer.listen(
-                    source,
-                    timeout=LISTEN_TIMEOUT,
-                    phrase_time_limit=PHRASE_TIME_LIMIT,
-                )
-                text = self.recognizer.recognize_google(audio, language=LANGUAGE)
-                return text
+                with self.mic as source:
+                    audio = self.recognizer.listen(
+                        source,
+                        timeout=LISTEN_TIMEOUT,
+                        phrase_time_limit=PHRASE_TIME_LIMIT,
+                    )
+                    result[0] = self.recognizer.recognize_google(audio, language=LANGUAGE)
             except sr.WaitTimeoutError:
-                return None
+                pass
             except sr.UnknownValueError:
-                return None
+                pass
             except sr.RequestError as e:
                 print(f"  [JARVIS] Erro no servico de reconhecimento: {e}")
-                return None
+            except Exception as e:
+                error[0] = e
+
+        self._last_listen_time = time.time()
+        worker = threading.Thread(target=_listen_worker, daemon=True)
+        worker.start()
+        worker.join(timeout=LISTEN_HARD_TIMEOUT)
+
+        if worker.is_alive():
+            # Thread travou — stream de áudio morto (típico após suspensão)
+            print("  [JARVIS] Timeout absoluto — microfone não respondeu.")
+            raise RuntimeError("Microfone travado após suspensão")
+
+        if error[0] is not None:
+            raise error[0]
+
+        return result[0]
 
     def extract_command(self, text):
         """Verifica se a frase contem a wake word e extrai o comando."""
@@ -755,24 +789,42 @@ class JarvisAssistant:
 
             except Exception as e:
                 print(f"  [JARVIS] Erro detectado: {e}")
-                print("  [JARVIS] Reinicializando áudio...")
-                self._reinit_audio()
-                try:
-                    self.calibrate()
-                    if had_command:
-                        speak("Senhor, tive uma falha mas já me recuperei. "
-                              "Pode repetir o comando por favor?")
-                    else:
-                        speak("Reinicialização concluída senhor. Estou de volta.")
-                except Exception:
-                    # Áudio ainda não disponível (ex: PC ainda acordando)
-                    print("  [JARVIS] Áudio indisponível — tentando novamente em 5s...")
-                    time.sleep(5)
+                # Loop de recuperação: retenta até o áudio voltar
+                recovered = False
+                for attempt in range(1, 13):  # até ~1 min de tentativas
+                    print(f"  [JARVIS] Tentativa de recuperação {attempt}/12...")
+                    self._reinit_audio()
+                    try:
+                        self.calibrate()
+                        if had_command:
+                            speak("Senhor, tive uma falha mas já me recuperei. "
+                                  "Pode repetir o comando por favor?")
+                        else:
+                            speak("Reinicialização concluída senhor. Estou de volta.")
+                        recovered = True
+                        break
+                    except Exception as retry_err:
+                        print(f"  [JARVIS] Áudio indisponível: {retry_err}")
+                        time.sleep(5)
+                if not recovered:
+                    # Última tentativa falhou — reinicia o processo inteiro
+                    print("  [JARVIS] Todas as tentativas falharam. Reiniciando processo...")
+                    _restart_process()
 
 
 # ─────────────────────────────────────────
-# MAIN
+# RESTART / MAIN
 # ─────────────────────────────────────────
+
+def _restart_process():
+    """Reinicia o processo Python inteiro (última instância de recuperação)."""
+    print("  [JARVIS] Substituindo processo por nova instância...")
+    try:
+        pygame.mixer.quit()
+    except Exception:
+        pass
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
 
 def main():
     print("=" * 42)
