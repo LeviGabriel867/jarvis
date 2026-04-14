@@ -23,8 +23,6 @@ import re
 import subprocess
 import ctypes
 
-from pathlib import Path
-
 # ─────────────────────────────────────────
 # DISPOSITIVO DE AUDIO
 # Execute diagnostico.py para ver os indices disponiveis.
@@ -41,9 +39,8 @@ PHRASE_TIME_LIMIT = 8       # duracao maxima da frase capturada
 LANGUAGE = "pt-BR"
 VOICE = "pt-BR-AntonioNeural"  # voz masculina brasileira (edge-tts)
 
-_PROJECT_ROOT = Path(__file__).parent.parent.parent
-BASE_DIR = _PROJECT_ROOT / "config"
-COMMANDS_FILE = BASE_DIR / "commands.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+COMMANDS_FILE = os.path.join(BASE_DIR, "comandos.json")
 
 # ─────────────────────────────────────────
 # RESPOSTAS DO SISTEMA (wake word, erros, etc.)
@@ -215,7 +212,7 @@ def action_volume(cmd):
 def action_proxima_reuniao(cmd):
     """Busca a próxima reunião no Google Agenda e abre o Meet."""
     try:
-        from .calendar import get_next_meeting
+        from google_agenda import get_next_meeting
         meeting = get_next_meeting()
     except FileNotFoundError as e:
         print(f"  [JARVIS] {e}")
@@ -242,7 +239,7 @@ def action_proxima_reuniao(cmd):
 def action_listar_reunioes_hoje(cmd):
     """Lista as reuniões de hoje com links de videoconferência."""
     try:
-        from .calendar import get_today_meetings
+        from google_agenda import get_today_meetings
         meetings = get_today_meetings()
     except FileNotFoundError as e:
         print(f"  [JARVIS] {e}")
@@ -268,7 +265,7 @@ def action_listar_reunioes_hoje(cmd):
 def action_reunioes_data(cmd):
     """Lista reuniões com links de videoconferência para uma data especificada."""
     try:
-        from .calendar import get_meetings_for_date
+        from google_agenda import get_meetings_for_date
         # Extrai a referência de data do comando
         date_reference = cmd.get("_date_ref", "")
         meetings = get_meetings_for_date(date_reference)
@@ -290,37 +287,6 @@ def action_reunioes_data(cmd):
     msg += " com videoconferência nessa data senhor. "
     for i, m in enumerate(meetings, 1):
         msg += f"{i}. {m['title']} das {m['start']} às {m['end']}. "
-    speak(msg)
-
-
-def action_eventos_data(cmd):
-    """Lista todos os eventos (reuniões e compromissos) para uma data especificada."""
-    try:
-        from .calendar import get_all_events_for_date
-        # Extrai a referência de data do comando
-        date_reference = cmd.get("_date_ref", "")
-        events = get_all_events_for_date(date_reference)
-    except FileNotFoundError as e:
-        print(f"  [JARVIS] {e}")
-        speak("Senhor, o arquivo de credenciais do Google não foi encontrado.")
-        return
-    except Exception as e:
-        print(f"  [JARVIS] Erro ao acessar Google Agenda: {e}")
-        speak("Não consegui acessar o Google Agenda senhor.")
-        return
-
-    if not events:
-        speak("Senhor, você não tem nenhum compromisso agendado para essa data.")
-        return
-
-    # Fala a lista completa (reuniões + eventos)
-    msg = f"Você tem {len(events)} compromisso" if len(events) == 1 else f"Você tem {len(events)} compromissos"
-    msg += " nessa data senhor. "
-    for i, e in enumerate(events, 1):
-        # Diferencia reuniões de eventos
-        tipo_label = "reunião" if e['type'] == "meeting" else "evento"
-        hora = f"das {e['start']} às {e['end']}" if e['start'] != "Dia todo" else "dia todo"
-        msg += f"{i}. {e['title']} ({tipo_label}) {hora}. "
     speak(msg)
 
 
@@ -348,7 +314,6 @@ ACTION_HANDLERS = {
     "proxima_reuniao": action_proxima_reuniao,
     "listar_reunioes_hoje": action_listar_reunioes_hoje,
     "reunioes_data": action_reunioes_data,
-    "eventos_data": action_eventos_data,
     "bloquear_pc": action_bloquear_pc,
     "desligar_pc": action_desligar_pc,
 }
@@ -365,7 +330,7 @@ def load_commands():
         print("  Crie o arquivo comandos.json na pasta do projeto.")
         sys.exit(1)
 
-    with open(str(COMMANDS_FILE), encoding="utf-8") as f:
+    with open(COMMANDS_FILE, encoding="utf-8") as f:
         commands = json.load(f)
 
     for cmd in commands:
@@ -434,9 +399,6 @@ def match_command(text, commands):
                     elif cmd.get("tipo") == "reunioes_data":
                         cmd = dict(cmd)
                         cmd["_date_ref"] = text_lower
-                    elif cmd.get("tipo") == "eventos_data":
-                        cmd = dict(cmd)
-                        cmd["_date_ref"] = text_lower
                     return cmd
 
     # Se não achou com substring, tenta fuzzy matching (similaridade)
@@ -462,9 +424,6 @@ def match_command(text, commands):
                 best_match = dict(best_match)
                 best_match["_nivel"] = nivel
         elif best_match.get("tipo") == "reunioes_data":
-            best_match = dict(best_match)
-            best_match["_date_ref"] = text_lower
-        elif best_match.get("tipo") == "eventos_data":
             best_match = dict(best_match)
             best_match["_date_ref"] = text_lower
         return best_match

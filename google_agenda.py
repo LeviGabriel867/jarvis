@@ -1,27 +1,19 @@
 """
-Google Calendar Integration
-Fetch meetings with Google Meet links from Google Calendar API.
+Integração com Google Calendar API.
+Busca a próxima reunião com link de videoconferência (Google Meet).
 """
 
 import os
 import json
 import datetime
-from pathlib import Path
 
-
-def _get_config_dir():
-    """Retorna o diretório de configuração."""
-    # Procura em relação ao diretório do projeto (parent do src/)
-    project_root = Path(__file__).parent.parent.parent
-    config_dir = project_root / "config"
-    return config_dir
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 
 
 def _load_config():
     """Carrega configurações do config.json."""
-    config_dir = _get_config_dir()
-    config_file = config_dir / "config.json"
-    with open(config_file, encoding="utf-8") as f:
+    with open(CONFIG_FILE, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -32,25 +24,21 @@ def _get_credentials():
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     config = _load_config()
-    config_dir = _get_config_dir()
-    creds_dir = config_dir / "credentials"
-    creds_dir.mkdir(parents=True, exist_ok=True)
-
-    creds_file = creds_dir / config.get("credentials_file", "credentials.json")
-    token_file = creds_dir / config.get("token_file", "token.json")
+    creds_file = os.path.join(BASE_DIR, config.get("credentials_file", "credentials.json"))
+    token_file = os.path.join(BASE_DIR, config.get("token_file", "token.json"))
 
     SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 
     creds = None
 
-    if token_file.exists():
-        creds = Credentials.from_authorized_user_file(str(token_file), SCOPES)
+    if os.path.exists(token_file):
+        creds = Credentials.from_authorized_user_file(token_file, SCOPES)
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            if not creds_file.exists():
+            if not os.path.exists(creds_file):
                 raise FileNotFoundError(
                     f"Arquivo '{creds_file}' não encontrado.\n"
                     "  Acesse https://console.cloud.google.com\n"
@@ -58,9 +46,9 @@ def _get_credentials():
                     "  2. Ative a Google Calendar API\n"
                     "  3. Crie credenciais OAuth2 (tipo Desktop)\n"
                     "  4. Configure redirect_uri: http://localhost:8080/\n"
-                    f"  5. Baixe o JSON e salve em: {creds_file}"
+                    "  5. Baixe o JSON e salve como 'credentials.json' na pasta do JARVIS"
                 )
-            flow = InstalledAppFlow.from_client_secrets_file(str(creds_file), SCOPES)
+            flow = InstalledAppFlow.from_client_secrets_file(creds_file, SCOPES)
             # Tenta porta 8080, fallback para 0 (qualquer porta disponível)
             try:
                 creds = flow.run_local_server(port=8080)
@@ -75,13 +63,13 @@ def _get_credentials():
 
 def get_next_meeting():
     """
-    Fetch the next meeting with a Google Meet link from the calendar.
+    Busca a próxima reunião com link do Google Meet no calendário.
 
-    Returns dict with:
-        - "title": event name
-        - "start": start time (str HH:MM)
-        - "link": Google Meet URL
-    Or None if no meeting with link found.
+    Retorna dict com:
+        - "title": nome do evento
+        - "start": horário de início (str HH:MM)
+        - "link": URL do Google Meet
+    Ou None se não houver reunião com link.
     """
     from googleapiclient.discovery import build
 
@@ -124,8 +112,6 @@ def get_next_meeting():
 
 def _extract_meet_link(event):
     """Extrai o link do Google Meet de um evento do calendário."""
-    import re
-
     # Tenta conferenceData primeiro (forma padrão)
     conf = event.get("conferenceData", {})
     for entry in conf.get("entryPoints", []):
@@ -141,64 +127,12 @@ def _extract_meet_link(event):
     for field in ["description", "location"]:
         text = event.get(field, "")
         if text and "meet.google.com/" in text:
+            import re
             match = re.search(r'https://meet\.google\.com/[a-z\-]+', text)
             if match:
                 return match.group(0)
 
     return None
-
-
-def _extract_event_info(event):
-    """
-    Extrai informações de um evento do calendário sem filtrar por Meet link.
-
-    Retorna dict com:
-        - "title": nome do evento
-        - "start": horário de início (str HH:MM ou "Dia todo")
-        - "end": horário de término (str HH:MM ou "Dia todo")
-        - "type": "meeting" (tem Meet link) ou "event" (genérico)
-        - "link": URL do Meet ou None
-    """
-    from datetime import datetime
-
-    # Extrai título
-    title = event.get("summary", "Evento sem título")
-
-    # Extrai Meet link (se houver)
-    meet_link = _extract_meet_link(event)
-    event_type = "meeting" if meet_link else "event"
-
-    # Extrai horários
-    start_raw = event["start"].get("dateTime", event["start"].get("date"))
-    end_raw = event["end"].get("dateTime", event["end"].get("date"))
-
-    # Verifica se é evento de dia todo (tem apenas "date", não "dateTime")
-    is_all_day = "dateTime" not in event["start"]
-
-    if is_all_day:
-        start_str = "Dia todo"
-        end_str = "Dia todo"
-    else:
-        # Converte para HH:MM
-        try:
-            start_dt = datetime.fromisoformat(start_raw)
-            start_str = start_dt.strftime("%H:%M")
-        except (ValueError, TypeError):
-            start_str = "?"
-
-        try:
-            end_dt = datetime.fromisoformat(end_raw)
-            end_str = end_dt.strftime("%H:%M")
-        except (ValueError, TypeError):
-            end_str = "?"
-
-    return {
-        "title": title,
-        "start": start_str,
-        "end": end_str,
-        "type": event_type,
-        "link": meet_link,
-    }
 
 
 def get_today_meetings():
@@ -259,47 +193,6 @@ def get_today_meetings():
             })
 
     return meetings
-
-
-def get_today_events():
-    """
-    Lista todos os eventos (com ou sem videoconferência) agendados para hoje.
-
-    Retorna list de dicts com:
-        - "title": nome do evento
-        - "start": horário de início (str HH:MM ou "Dia todo")
-        - "end": horário de término (str HH:MM ou "Dia todo")
-        - "type": "meeting" ou "event"
-        - "link": URL do Meet ou None
-    Ou lista vazia se não houver eventos.
-    """
-    from googleapiclient.discovery import build
-    from datetime import date as date_class
-
-    creds = _get_credentials()
-    service = build("calendar", "v3", credentials=creds)
-
-    today = date_class.today().isoformat()
-    tomorrow = (datetime.datetime.fromisoformat(today) + datetime.timedelta(days=1)).date().isoformat()
-
-    events_result = service.events().list(
-        calendarId="primary",
-        timeMin=f"{today}T00:00:00Z",
-        timeMax=f"{tomorrow}T00:00:00Z",
-        maxResults=50,
-        singleEvents=True,
-        orderBy="startTime",
-    ).execute()
-
-    events = events_result.get("items", [])
-    result = []
-
-    for event in events:
-        # Inclui TODOS os eventos, não apenas os com Meet link
-        event_info = _extract_event_info(event)
-        result.append(event_info)
-
-    return result
 
 
 def _parse_date_reference(text_lower):
@@ -366,52 +259,7 @@ def _parse_date_reference(text_lower):
                 data_alvo = hoje + timedelta(days=dias_ate)
             return (data_alvo, data_alvo)
 
-    # Mapeamento de meses em português
-    meses_pt = {
-        "janeiro": 1, "fevereiro": 2, "marco": 3, "março": 3, "abril": 4,
-        "maio": 5, "junho": 6, "julho": 7, "agosto": 8, "setembro": 9,
-        "outubro": 10, "novembro": 11, "dezembro": 12,
-    }
-
-    # Data com "do próximo mês": "15 do próximo mês" (ANTES de "próximo mês" sozinho)
-    match = re.search(r'(\d{1,2})\s+(?:do\s+)?(?:proximo|próximo)\s+(?:mes|mês)', text)
-    if match:
-        dia = int(match.group(1))
-        primeiro_prox = (hoje.replace(day=1) + timedelta(days=32)).replace(day=1)
-        if 1 <= dia <= 31:
-            try:
-                # Tenta criar data no próximo mês
-                data_alvo = date_class(primeiro_prox.year, primeiro_prox.month, dia)
-                return (data_alvo, data_alvo)
-            except ValueError:
-                # Se o dia não existe neste mês (ex: 31 de fevereiro), usa o último dia
-                ultimo_dia = (date_class(primeiro_prox.year, primeiro_prox.month + 1, 1) - timedelta(days=1)).day
-                data_alvo = date_class(primeiro_prox.year, primeiro_prox.month, min(dia, ultimo_dia))
-                return (data_alvo, data_alvo)
-
-    # Próximo mês (semanal, "próximo mês" / "mês que vem")
-    if "proximo mes" in text or "mes que vem" in text or "proxima mes" in text:
-        primeiro_prox = (hoje.replace(day=1) + timedelta(days=32)).replace(day=1)
-        ultimo_prox = (primeiro_prox + timedelta(days=32)).replace(day=1) - timedelta(days=1)
-        return (primeiro_prox, ultimo_prox)
-
-    # Data com nome de mês: "15 de abril" ou "15 de março" etc
-    # Padrão: "(\d{1,2})\s+(?:de\s+)?([a-z]+)" para capturar "15 de abril" ou "15 abril"
-    match = re.search(r'(\d{1,2})\s+(?:de\s+)?([a-z]+)', text)
-    if match:
-        dia = int(match.group(1))
-        mes_nome = match.group(2).strip()
-        if mes_nome in meses_pt and 1 <= dia <= 31:
-            mes = meses_pt[mes_nome]
-            try:
-                data_alvo = date_class(hoje.year, mes, dia)
-                if data_alvo < hoje:
-                    data_alvo = date_class(hoje.year + 1, mes, dia)
-                return (data_alvo, data_alvo)
-            except ValueError:
-                pass
-
-    # Data numérica no formato dd/mm - verificar (mais específica que day alone)
+    # Data numérica no formato dd/mm - verificar PRIMEIRO (mais específica)
     match = re.search(r'(\d{1,2})/(\d{1,2})', text)
     if match:
         dia = int(match.group(1))
@@ -510,48 +358,3 @@ def get_meetings_for_date(date_text):
             })
 
     return meetings
-
-
-def get_all_events_for_date(date_text):
-    """
-    Lista TODOS os eventos (com ou sem videoconferência) para a data especificada.
-
-    date_text: string em português natural (ex: "amanhã", "segunda", "dia 15")
-
-    Retorna list de dicts com:
-        - "title": nome do evento
-        - "start": horário de início (str HH:MM ou "Dia todo")
-        - "end": horário de término (str HH:MM ou "Dia todo")
-        - "type": "meeting" (tem Meet link) ou "event" (genérico)
-        - "link": URL do Meet ou None
-    Ou lista vazia se não houver.
-    """
-    from googleapiclient.discovery import build
-
-    creds = _get_credentials()
-    service = build("calendar", "v3", credentials=creds)
-
-    date_inicio, date_fim = _parse_date_reference(date_text.lower())
-
-    # Converte para ISO format com hora
-    time_min = f"{date_inicio.isoformat()}T00:00:00Z"
-    time_max = f"{(date_fim + datetime.timedelta(days=1)).isoformat()}T00:00:00Z"
-
-    events_result = service.events().list(
-        calendarId="primary",
-        timeMin=time_min,
-        timeMax=time_max,
-        maxResults=50,
-        singleEvents=True,
-        orderBy="startTime",
-    ).execute()
-
-    events = events_result.get("items", [])
-    result = []
-
-    for event in events:
-        # Inclui TODOS os eventos, não apenas os com Meet link
-        event_info = _extract_event_info(event)
-        result.append(event_info)
-
-    return result

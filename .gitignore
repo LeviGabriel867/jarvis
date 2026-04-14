@@ -38,6 +38,7 @@ env/
 .project
 .pydevproject
 .settings/
+.claude/
 
 # OS
 .DS_Store
