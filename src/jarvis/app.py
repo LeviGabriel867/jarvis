@@ -14,7 +14,6 @@ import os
 import json
 import time
 import webbrowser
-import threading
 import datetime
 import asyncio
 import tempfile
@@ -22,6 +21,7 @@ import random
 import re
 import subprocess
 import ctypes
+from difflib import SequenceMatcher
 
 from pathlib import Path
 
@@ -30,16 +30,18 @@ from pathlib import Path
 # Execute diagnostico.py para ver os indices disponiveis.
 # None = usa o padrao do Windows.
 AUDIO_DEVICE = None
+SAMPLE_RATE = 16000         # 16kHz — ideal para speech recognition
 
 # ─────────────────────────────────────────
 # CONFIGURACOES
 # ─────────────────────────────────────────
 WAKE_WORD = "jarvis"
-LISTEN_TIMEOUT = 10         # segundos esperando frase completa
-COMMAND_PAUSE = 2           # segundos de silencio para finalizar frase
+LISTEN_TIMEOUT = 5          # segundos esperando frase completa
+COMMAND_PAUSE = 0.8         # segundos de silencio para finalizar frase
 PHRASE_TIME_LIMIT = 8       # duracao maxima da frase capturada
 LANGUAGE = "pt-BR"
 VOICE = "pt-BR-AntonioNeural"  # voz masculina brasileira (edge-tts)
+RECALIBRATE_EVERY = 5       # recalibrar microfone a cada N comandos
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 BASE_DIR = _PROJECT_ROOT / "config"
@@ -91,7 +93,7 @@ except ImportError:
 # MOTOR DE VOZ (TTS) HUMANIZADO
 # ─────────────────────────────────────────
 
-pygame.mixer.init()
+pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=1024)
 
 # Perfis de prosódia — cada fala sorteia um perfil levemente diferente
 # para nao soar sempre igual (rate e pitch aceitos pelo edge-tts)
@@ -103,6 +105,9 @@ PROSODY_PROFILES = [
     {"rate": "-2%",  "pitch": "-4Hz"},   # quase normal, mais grave
 ]
 
+# Event loop persistente para TTS (evita overhead de asyncio.run() a cada fala)
+_tts_loop = asyncio.new_event_loop()
+
 
 def speak(text):
     """Sintetiza e reproduz texto com voz masculina humanizada via edge-tts."""
@@ -110,11 +115,11 @@ def speak(text):
     tmp = os.path.join(tempfile.gettempdir(), "jarvis_tts.mp3")
     try:
         profile = random.choice(PROSODY_PROFILES)
-        asyncio.run(_generate_speech(text, tmp, profile))
+        _tts_loop.run_until_complete(_generate_speech(text, tmp, profile))
         pygame.mixer.music.load(tmp)
         pygame.mixer.music.play()
         while pygame.mixer.music.get_busy():
-            time.sleep(0.05)
+            pygame.time.wait(30)
         pygame.mixer.music.unload()
     except Exception as e:
         print(f"  [JARVIS] Erro no TTS: {e}")
@@ -139,6 +144,17 @@ async def _generate_speech(text, output_file, profile):
 # ─────────────────────────────────────────
 # ACOES BUILT-IN
 # ─────────────────────────────────────────
+
+_cached_calendar = None
+
+def _calendar_module():
+    """Importa e cacheia o módulo calendar para evitar re-imports."""
+    global _cached_calendar
+    if _cached_calendar is None:
+        from . import calendar as cal
+        _cached_calendar = cal
+    return _cached_calendar
+
 
 def _speak_response(cmd, default, **kwargs):
     """Fala uma resposta aleatória do comando, formatando variáveis."""
@@ -215,8 +231,7 @@ def action_volume(cmd):
 def action_proxima_reuniao(cmd):
     """Busca a próxima reunião no Google Agenda e abre o Meet."""
     try:
-        from .calendar import get_next_meeting
-        meeting = get_next_meeting()
+        meeting = _calendar_module().get_next_meeting()
     except FileNotFoundError as e:
         print(f"  [JARVIS] {e}")
         speak("Senhor, o arquivo de credenciais do Google não foi encontrado. Verifique o setup.")
@@ -242,8 +257,7 @@ def action_proxima_reuniao(cmd):
 def action_listar_reunioes_hoje(cmd):
     """Lista as reuniões de hoje com links de videoconferência."""
     try:
-        from .calendar import get_today_meetings
-        meetings = get_today_meetings()
+        meetings = _calendar_module().get_today_meetings()
     except FileNotFoundError as e:
         print(f"  [JARVIS] {e}")
         speak("Senhor, o arquivo de credenciais do Google não foi encontrado.")
@@ -268,10 +282,8 @@ def action_listar_reunioes_hoje(cmd):
 def action_reunioes_data(cmd):
     """Lista reuniões com links de videoconferência para uma data especificada."""
     try:
-        from .calendar import get_meetings_for_date
-        # Extrai a referência de data do comando
         date_reference = cmd.get("_date_ref", "")
-        meetings = get_meetings_for_date(date_reference)
+        meetings = _calendar_module().get_meetings_for_date(date_reference)
     except FileNotFoundError as e:
         print(f"  [JARVIS] {e}")
         speak("Senhor, o arquivo de credenciais do Google não foi encontrado.")
@@ -296,10 +308,8 @@ def action_reunioes_data(cmd):
 def action_eventos_data(cmd):
     """Lista todos os eventos (reuniões e compromissos) para uma data especificada."""
     try:
-        from .calendar import get_all_events_for_date
-        # Extrai a referência de data do comando
         date_reference = cmd.get("_date_ref", "")
-        events = get_all_events_for_date(date_reference)
+        events = _calendar_module().get_all_events_for_date(date_reference)
     except FileNotFoundError as e:
         print(f"  [JARVIS] {e}")
         speak("Senhor, o arquivo de credenciais do Google não foi encontrado.")
@@ -406,8 +416,6 @@ def match_command(text, commands):
     Usa fuzzy matching (tolerante a erros) para melhorar reconhecimento.
     Exceção: desligar_pc exige match exato por segurança.
     """
-    from difflib import SequenceMatcher
-
     text_lower = text.lower().strip()
 
     # Primeiro, tenta match exato (substring)
@@ -508,18 +516,29 @@ class JarvisAssistant:
         self.recognizer = sr.Recognizer()
         self.recognizer.dynamic_energy_threshold = True
         self.recognizer.pause_threshold = COMMAND_PAUSE
+        self.recognizer.phrase_threshold = 0.2      # sensibilidade p/ início de fala
+        self.recognizer.non_speaking_duration = 0.4  # silêncio mínimo entre palavras
+        self._command_count = 0
 
         if AUDIO_DEVICE is not None:
-            self.mic = sr.Microphone(device_index=AUDIO_DEVICE)
+            self.mic = sr.Microphone(device_index=AUDIO_DEVICE, sample_rate=SAMPLE_RATE)
         else:
-            self.mic = sr.Microphone()
+            self.mic = sr.Microphone(sample_rate=SAMPLE_RATE)
 
     def calibrate(self):
         """Calibra o microfone para o ruido ambiente."""
         print("  [JARVIS] Calibrando microfone para ruido ambiente...")
         with self.mic as source:
             self.recognizer.adjust_for_ambient_noise(source, duration=2)
-        print("  [JARVIS] Calibracao concluida.")
+        print(f"  [JARVIS] Calibracao concluida (energy_threshold={self.recognizer.energy_threshold:.0f}).")
+
+    def _maybe_recalibrate(self):
+        """Recalibra periodicamente para manter qualidade do áudio."""
+        self._command_count += 1
+        if self._command_count % RECALIBRATE_EVERY == 0:
+            print("  [JARVIS] Recalibrando microfone...")
+            with self.mic as source:
+                self.recognizer.adjust_for_ambient_noise(source, duration=1)
 
     def listen_loop(self):
         """Escuta uma frase completa e retorna o texto transcrito."""
@@ -595,6 +614,7 @@ class JarvisAssistant:
                     print(f'  [JARVIS] Comando nao reconhecido: "{command_text}"')
                     speak(random.choice(UNKNOWN_COMMAND_RESPONSES))
 
+                self._maybe_recalibrate()
                 print()
 
             except KeyboardInterrupt:
