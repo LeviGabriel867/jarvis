@@ -1,0 +1,120 @@
+# Contributing to JARVIS
+
+## Project Structure
+
+```
+jarvis/
+├── src/jarvis/              # Main package
+│   ├── __init__.py
+│   ├── app.py              # Voice assistant application
+│   └── calendar.py         # Google Calendar integration
+├── config/                  # Configuration files
+│   ├── commands.json       # Command definitions
+│   ├── config.json         # Settings
+│   ├── config.example.json # Configuration template
+│   └── credentials/        # OAuth2 credentials (not in git)
+├── scripts/                 # Entry points
+│   ├── run.py              # Python launcher
+│   ├── run.bat             # Windows launcher
+│   └── run_hidden.vbs      # Windows hidden launcher
+├── docs/                    # Documentation
+├── README.md               # Project documentation
+├── requirements.txt        # Python dependencies
+└── setup.py               # Package configuration
+```
+
+## Setting Up Development Environment
+
+1. **Clone the repository**
+   ```bash
+   git clone <repository>
+   cd jarvis
+   ```
+
+2. **Create a virtual environment**
+   ```bash
+   python -m venv venv
+   .\venv\Scripts\activate  # On Windows
+   source venv/bin/activate # On Linux/Mac
+   ```
+
+3. **Install dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Configure Google Calendar (optional)**
+   - Create credentials at https://console.cloud.google.com
+   - Place `credentials.json` in `config/credentials/`
+   - First run will authenticate via browser
+
+## Running the Application
+
+### Option 1: Python launcher
+```bash
+python scripts/run.py
+```
+
+### Option 2: Windows batch file
+```bash
+scripts/run.bat
+```
+
+### Option 3: Windows hidden launcher
+```bash
+scripts/run_hidden.vbs
+```
+
+### List available commands
+```bash
+python scripts/run.py --list
+```
+
+## Adding New Commands
+
+Edit `config/commands.json`:
+
+```json
+{
+  "tipo": "saudacao",
+  "triggers": ["your trigger phrases"],
+  "descricao": "Description of the command",
+  "respostas": [
+    "Response option 1",
+    "Response option 2"
+  ]
+}
+```
+
+Command types available:
+- `saudacao` - greeting responses
+- `abrir_url` - open URL in browser
+- `proxima_reuniao` - next meeting from calendar
+- `listar_reunioes_hoje` - list today's meetings
+- `reunioes_data` - meetings for a specific date
+- `fechar_programa` - close application by process name
+- `volume` - adjust system volume
+- `bloquear_pc` - lock computer
+- `desligar_pc` - shutdown computer
+- `hora` - speak current time
+- `data` - speak current date
+- `desligar` - stop JARVIS
+
+## Code Style
+
+- Use Python 3.12+
+- Follow PEP 8 guidelines
+- Use type hints where applicable
+- Document complex functions
+
+## Reporting Issues
+
+When reporting issues, include:
+- Python version: `python --version`
+- Operating System
+- Error message/logs
+- Steps to reproduce
+
+## License
+
+MIT License

@@ -23,6 +23,8 @@ import re
 import subprocess
 import ctypes
 
+from pathlib import Path
+
 # ─────────────────────────────────────────
 # DISPOSITIVO DE AUDIO
 # Execute diagnostico.py para ver os indices disponiveis.
@@ -39,8 +41,9 @@ PHRASE_TIME_LIMIT = 8       # duracao maxima da frase capturada
 LANGUAGE = "pt-BR"
 VOICE = "pt-BR-AntonioNeural"  # voz masculina brasileira (edge-tts)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-COMMANDS_FILE = os.path.join(BASE_DIR, "comandos.json")
+_PROJECT_ROOT = Path(__file__).parent.parent.parent
+BASE_DIR = _PROJECT_ROOT / "config"
+COMMANDS_FILE = BASE_DIR / "commands.json"
 
 # ─────────────────────────────────────────
 # RESPOSTAS DO SISTEMA (wake word, erros, etc.)
@@ -212,7 +215,7 @@ def action_volume(cmd):
 def action_proxima_reuniao(cmd):
     """Busca a próxima reunião no Google Agenda e abre o Meet."""
     try:
-        from google_agenda import get_next_meeting
+        from .calendar import get_next_meeting
         meeting = get_next_meeting()
     except FileNotFoundError as e:
         print(f"  [JARVIS] {e}")
@@ -239,7 +242,7 @@ def action_proxima_reuniao(cmd):
 def action_listar_reunioes_hoje(cmd):
     """Lista as reuniões de hoje com links de videoconferência."""
     try:
-        from google_agenda import get_today_meetings
+        from .calendar import get_today_meetings
         meetings = get_today_meetings()
     except FileNotFoundError as e:
         print(f"  [JARVIS] {e}")
@@ -265,7 +268,7 @@ def action_listar_reunioes_hoje(cmd):
 def action_reunioes_data(cmd):
     """Lista reuniões com links de videoconferência para uma data especificada."""
     try:
-        from google_agenda import get_meetings_for_date
+        from .calendar import get_meetings_for_date
         # Extrai a referência de data do comando
         date_reference = cmd.get("_date_ref", "")
         meetings = get_meetings_for_date(date_reference)
@@ -330,7 +333,7 @@ def load_commands():
         print("  Crie o arquivo comandos.json na pasta do projeto.")
         sys.exit(1)
 
-    with open(COMMANDS_FILE, encoding="utf-8") as f:
+    with open(str(COMMANDS_FILE), encoding="utf-8") as f:
         commands = json.load(f)
 
     for cmd in commands:

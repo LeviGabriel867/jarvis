@@ -4,20 +4,49 @@ Assistente de voz local para Windows. Escuta a wake word **"Jarvis"**, responde 
 
 ---
 
+## Quick Start
+
+```bash
+# 1. Instalar dependências
+pip install -r requirements.txt
+
+# 2. Usar um dos launchers (ou executar pelo Python)
+python scripts/run.py         # Python launcher
+# ou
+scripts/run.bat               # Windows com console
+# ou
+scripts/run_hidden.vbs        # Windows silencioso
+```
+
+**Nota**: Na primeira vez, você será solicitado a autenticar com Google Calendar (caso queira usar recursos de agenda).
+
+---
+
 ## Estrutura do Projeto
 
 ```
 jarvis/
-├── jarvis.py              # Aplicacao principal (assistente de voz + TTS)
-├── comandos.json          # Comandos, triggers e respostas (edite aqui)
-├── config.json            # Configuracoes (conta Google, caminhos de credenciais)
-├── google_agenda.py       # Integracao com Google Calendar API
-├── credentials.json       # (voce cria) Credenciais OAuth2 do Google Cloud
-├── token.json             # (gerado automaticamente) Token de autenticacao
-├── diagnostico.py         # Utilitario de diagnostico de dispositivos de audio
-├── iniciar_jarvis.bat     # Launcher Windows (com console)
-├── iniciar_jarvis.vbs     # Launcher Windows (modo oculto, sem janela)
-└── README.md
+├── src/jarvis/              # Código-fonte principal
+│   ├── __init__.py
+│   ├── app.py              # Aplicação principal (assistente de voz + TTS)
+│   └── calendar.py         # Integração com Google Calendar API
+├── config/                  # Configuração e dados sensíveis
+│   ├── commands.json       # Comandos, triggers e respostas (edite aqui)
+│   ├── config.json         # Configurações (conta Google, caminhos)
+│   ├── config.example.json # Template de configuração
+│   └── credentials/        # Credenciais OAuth2 (não versionado)
+│       ├── credentials.json # (você configura) Credenciais OAuth2 do Google Cloud
+│       └── token.json      # (gerado automaticamente) Token de autenticação
+├── scripts/                 # Scripts de inicialização
+│   ├── run.py              # Launcher Python
+│   ├── run.bat             # Launcher Windows (com console)
+│   └── run_hidden.vbs      # Launcher Windows (modo oculto)
+├── docs/                    # Documentação
+│   └── CONTRIBUTING.md     # Guia de contribuição
+├── .gitignore              # Git ignore rules
+├── README.md               # Esta documentação
+├── requirements.txt        # Dependências Python
+└── setup.py               # Configuração de empacotamento
 ```
 
 ## Dependencias
@@ -36,7 +65,7 @@ jarvis/
 Instalar tudo:
 
 ```bash
-pip install SpeechRecognition pyaudio edge-tts pygame pycaw google-api-python-client google-auth-oauthlib google-auth-httplib2
+pip install -r requirements.txt
 ```
 
 > Se `pyaudio` falhar no Windows:
@@ -304,24 +333,22 @@ Baixe em [python.org](https://www.python.org/downloads/). Marque **"Add Python t
 ### Passo 2 - Instalar dependencias
 
 ```bash
-pip install SpeechRecognition pyaudio edge-tts pygame pycaw google-api-python-client google-auth-oauthlib google-auth-httplib2
+pip install -r requirements.txt
 ```
 
 ### Passo 3 - Diagnostico do microfone (opcional)
 
-```bash
-python diagnostico.py
-```
-
-Se o microfone padrao nao funcionar, configure `AUDIO_DEVICE` em `jarvis.py` (linha 27).
+Se o microfone padrão não funcionar, configure `AUDIO_DEVICE` em `src/jarvis/app.py` (linha ~30).
 
 ### Passo 4 - Iniciar
 
 ```bash
-python jarvis.py
+python scripts/run.py
 ```
 
-Ou via launchers: `iniciar_jarvis.bat` (com console) / `iniciar_jarvis.vbs` (oculto).
+Ou via launchers:
+- **Windows com console**: `scripts/run.bat`
+- **Windows silencioso**: `scripts/run_hidden.vbs`
 
 ### Passo 5 - Usar
 
@@ -337,7 +364,7 @@ Para encerrar: `Ctrl+C` ou diga **"Jarvis, desligar"**
 
 ## Configuracoes do Assistente
 
-Definidas em `jarvis.py` (linhas 27-38):
+Definidas em `src/jarvis/app.py` (linhas ~26-40):
 
 | Parametro          | Valor Padrao             | Descricao                                    |
 |--------------------|--------------------------|----------------------------------------------|

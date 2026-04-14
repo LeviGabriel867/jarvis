@@ -1,19 +1,27 @@
 """
-Integração com Google Calendar API.
-Busca a próxima reunião com link de videoconferência (Google Meet).
+Google Calendar Integration
+Fetch meetings with Google Meet links from Google Calendar API.
 """
 
 import os
 import json
 import datetime
+from pathlib import Path
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+
+def _get_config_dir():
+    """Retorna o diretório de configuração."""
+    # Procura em relação ao diretório do projeto (parent do src/)
+    project_root = Path(__file__).parent.parent.parent
+    config_dir = project_root / "config"
+    return config_dir
 
 
 def _load_config():
     """Carrega configurações do config.json."""
-    with open(CONFIG_FILE, encoding="utf-8") as f:
+    config_dir = _get_config_dir()
+    config_file = config_dir / "config.json"
+    with open(config_file, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -24,21 +32,25 @@ def _get_credentials():
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     config = _load_config()
-    creds_file = os.path.join(BASE_DIR, config.get("credentials_file", "credentials.json"))
-    token_file = os.path.join(BASE_DIR, config.get("token_file", "token.json"))
+    config_dir = _get_config_dir()
+    creds_dir = config_dir / "credentials"
+    creds_dir.mkdir(parents=True, exist_ok=True)
+
+    creds_file = creds_dir / config.get("credentials_file", "credentials.json")
+    token_file = creds_dir / config.get("token_file", "token.json")
 
     SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 
     creds = None
 
-    if os.path.exists(token_file):
-        creds = Credentials.from_authorized_user_file(token_file, SCOPES)
+    if token_file.exists():
+        creds = Credentials.from_authorized_user_file(str(token_file), SCOPES)
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            if not os.path.exists(creds_file):
+            if not creds_file.exists():
                 raise FileNotFoundError(
                     f"Arquivo '{creds_file}' não encontrado.\n"
                     "  Acesse https://console.cloud.google.com\n"
@@ -46,9 +58,9 @@ def _get_credentials():
                     "  2. Ative a Google Calendar API\n"
                     "  3. Crie credenciais OAuth2 (tipo Desktop)\n"
                     "  4. Configure redirect_uri: http://localhost:8080/\n"
-                    "  5. Baixe o JSON e salve como 'credentials.json' na pasta do JARVIS"
+                    f"  5. Baixe o JSON e salve em: {creds_file}"
                 )
-            flow = InstalledAppFlow.from_client_secrets_file(creds_file, SCOPES)
+            flow = InstalledAppFlow.from_client_secrets_file(str(creds_file), SCOPES)
             # Tenta porta 8080, fallback para 0 (qualquer porta disponível)
             try:
                 creds = flow.run_local_server(port=8080)
@@ -63,13 +75,13 @@ def _get_credentials():
 
 def get_next_meeting():
     """
-    Busca a próxima reunião com link do Google Meet no calendário.
+    Fetch the next meeting with a Google Meet link from the calendar.
 
-    Retorna dict com:
-        - "title": nome do evento
-        - "start": horário de início (str HH:MM)
-        - "link": URL do Google Meet
-    Ou None se não houver reunião com link.
+    Returns dict with:
+        - "title": event name
+        - "start": start time (str HH:MM)
+        - "link": Google Meet URL
+    Or None if no meeting with link found.
     """
     from googleapiclient.discovery import build
 
@@ -112,6 +124,8 @@ def get_next_meeting():
 
 def _extract_meet_link(event):
     """Extrai o link do Google Meet de um evento do calendário."""
+    import re
+
     # Tenta conferenceData primeiro (forma padrão)
     conf = event.get("conferenceData", {})
     for entry in conf.get("entryPoints", []):
@@ -127,7 +141,6 @@ def _extract_meet_link(event):
     for field in ["description", "location"]:
         text = event.get(field, "")
         if text and "meet.google.com/" in text:
-            import re
             match = re.search(r'https://meet\.google\.com/[a-z\-]+', text)
             if match:
                 return match.group(0)
