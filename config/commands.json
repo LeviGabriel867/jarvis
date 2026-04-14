@@ -3,6 +3,7 @@
     "tipo": "saudacao",
     "triggers": ["bom dia"],
     "descricao": "Responde bom dia",
+    "match_case": false,
     "respostas": [
       "Bom dia senhor. Espero que tenha dormido bem.",
       "Bom dia! Pronto para mais um dia produtivo senhor.",
@@ -14,6 +15,7 @@
     "tipo": "saudacao",
     "triggers": ["boa tarde"],
     "descricao": "Responde boa tarde",
+    "match_case": false,
     "respostas": [
       "Boa tarde senhor.",
       "Boa tarde! Como posso ajudá-lo senhor?",
@@ -25,6 +27,7 @@
     "tipo": "saudacao",
     "triggers": ["boa noite"],
     "descricao": "Responde boa noite",
+    "match_case": false,
     "respostas": [
       "Boa noite senhor.",
       "Boa noite! Precisa de algo antes de encerrar o dia senhor?",
@@ -36,6 +39,7 @@
     "tipo": "listar_reunioes_hoje",
     "triggers": ["o que tenho pra hoje", "reuniões de hoje", "que reuniões hoje", "qual meu dia", "me mostre as reuniões", "minhas reuniões", "agenda de hoje"],
     "descricao": "Lista todas as reuniões com videoconferência agendadas para hoje",
+    "match_case": false,
     "respostas": [
       "Consultando sua agenda para hoje senhor."
     ]
@@ -44,6 +48,7 @@
     "tipo": "proxima_reuniao",
     "triggers": ["abrir reunião", "entrar em reunião", "entrar na reunião", "abrir meeting", "entrar em daily", "abrir daily", "daily meeting", "entrar na daily", "próxima reunião"],
     "descricao": "Busca a próxima reunião no Google Agenda e abre o Meet",
+    "match_case": false,
     "respostas": [
       "Abrindo a reunião {reuniao} das {horario} senhor.",
       "Conectando você à {reuniao} das {horario} senhor.",
@@ -55,6 +60,7 @@
     "tipo": "abrir_url",
     "triggers": ["abrir navegador", "abre o navegador", "abrir browser", "abrir google"],
     "descricao": "Abre o navegador no Google",
+    "match_case": false,
     "url": "https://www.google.com",
     "respostas": [
       "Navegador aberto senhor.",
@@ -67,6 +73,7 @@
     "tipo": "fechar_programa",
     "triggers": ["fechar navegador", "fechar browser", "fechar google", "fechar o navegador", "fechar o google"],
     "descricao": "Fecha o navegador",
+    "match_case": false,
     "processos": ["chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe"],
     "respostas": [
       "Fechando o navegador senhor.",
@@ -79,6 +86,7 @@
     "tipo": "volume",
     "triggers": ["volume", "som"],
     "descricao": "Ajusta o volume do sistema de 0 a 10",
+    "match_case": false,
     "respostas": [
       "Volume ajustado para {nivel} senhor.",
       "Pronto, volume no {nivel} senhor.",
@@ -90,6 +98,7 @@
     "tipo": "bloquear_pc",
     "triggers": ["bloquear computador", "bloquear o computador", "bloquear pc", "bloquear tela", "bloquear o pc", "trancar computador", "travar computador"],
     "descricao": "Bloqueia o computador (Windows + L)",
+    "match_case": false,
     "respostas": [
       "Bloqueando o computador senhor.",
       "Tela bloqueada. Até seu retorno senhor.",
@@ -100,6 +109,7 @@
     "tipo": "desligar_pc",
     "triggers": ["desligar computador", "desligar o computador", "desligar pc", "desligar o pc", "desligar a maquina", "shutdown computador"],
     "descricao": "Desliga o computador de forma graciosa",
+    "match_case": true,
     "respostas": [
       "Desligando o computador em 5 segundos senhor.",
       "Iniciando o desligamento. Até a próxima senhor.",
@@ -111,6 +121,7 @@
     "tipo": "hora",
     "triggers": ["que horas sao", "que horas são", "me diz as horas", "horas"],
     "descricao": "Informa a hora atual",
+    "match_case": false,
     "respostas": [
       "Agora são {hora} senhor.",
       "São exatamente {hora}.",
@@ -122,6 +133,7 @@
     "tipo": "data",
     "triggers": ["que dia e hoje", "que dia é hoje", "qual a data", "data de hoje", "qual a data de hoje"],
     "descricao": "Informa a data atual",
+    "match_case": false,
     "respostas": [
       "Hoje é {data} senhor.",
       "Estamos em {data}.",
@@ -133,14 +145,28 @@
     "tipo": "reunioes_data",
     "triggers": ["reuniões de amanhã", "reuniões amanhã", "agenda amanhã", "reuniões de segunda", "reuniões de terça", "reuniões de quarta", "reuniões de quinta", "reuniões de sexta", "reuniões de sábado", "reuniões de domingo", "reuniões da próxima", "reuniões próxima semana", "reuniões semana que vem", "dia 15", "reuniões do dia"],
     "descricao": "Lista reuniões com videoconferência para a data especificada",
+    "match_case": false,
     "respostas": [
       "Consultando sua agenda para essa data senhor."
+    ]
+  },
+  {
+    "tipo": "suspender_pc",
+    "triggers": ["suspender computador", "suspender o computador", "suspender pc", "suspender o pc", "dormir computador", "modo dormir", "colocar pra dormir"],
+    "descricao": "Suspende o computador (modo dormir)",
+    "match_case": true,
+    "respostas": [
+      "Suspendendo o computador senhor. Até seu retorno.",
+      "Colocando o computador para dormir senhor.",
+      "Entrando em modo de suspensão senhor. Até logo.",
+      "Computador entrando em modo dormir senhor."
     ]
   },
   {
     "tipo": "desligar",
     "triggers": ["desligar jarvis", "encerrar jarvis", "encerrar", "sair", "ate logo", "até logo"],
     "descricao": "Encerra o JARVIS",
+    "match_case": true,
     "respostas": [
       "Até logo senhor. Foi um prazer.",
       "Encerrando sistemas. Até a próxima senhor.",

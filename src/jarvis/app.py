@@ -362,6 +362,23 @@ def action_desligar_pc(cmd):
     subprocess.run(["shutdown", "/s", "/t", "5"], creationflags=0x08000000)
 
 
+def action_suspender_pc(cmd):
+    """Suspende o computador (modo dormir) via .NET SetSuspendState."""
+    _speak_response(cmd, "Suspendendo o computador senhor.")
+    time.sleep(1)  # aguarda a fala terminar antes de suspender
+    # Usa PowerShell + .NET para suspensão confiável:
+    # Suspend = modo dormir (não hibernate)
+    # $false = não forçar (apps podem salvar dados)
+    # $false = permitir acordar por teclado/mouse
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command",
+         "Add-Type -AssemblyName System.Windows.Forms; "
+         "[System.Windows.Forms.Application]::SetSuspendState("
+         "'Suspend', $false, $false)"],
+        creationflags=0x08000000,
+    )
+
+
 # Mapa de tipo -> funcao executora
 ACTION_HANDLERS = {
     "abrir_url": action_abrir_url,
@@ -377,6 +394,7 @@ ACTION_HANDLERS = {
     "eventos_data": action_eventos_data,
     "bloquear_pc": action_bloquear_pc,
     "desligar_pc": action_desligar_pc,
+    "suspender_pc": action_suspender_pc,
 }
 
 
@@ -426,71 +444,66 @@ def _extract_number(text):
     return None
 
 
-# Comandos críticos que exigem match exato (não usam fuzzy/substring)
-EXACT_MATCH_ONLY = {"desligar_pc", "desligar"}
+def _enrich_command(cmd, text_lower):
+    """Adiciona dados extras ao comando conforme o tipo (volume, datas, etc.)."""
+    tipo = cmd.get("tipo")
+    if tipo == "volume":
+        nivel = _extract_number(text_lower)
+        if nivel is not None:
+            cmd = dict(cmd)
+            cmd["_nivel"] = nivel
+    elif tipo in ("reunioes_data", "eventos_data"):
+        cmd = dict(cmd)
+        cmd["_date_ref"] = text_lower
+    return cmd
 
 
 def match_command(text, commands):
     """
     Encontra o comando correspondente ao texto falado.
-    Usa fuzzy matching (tolerante a erros) para melhorar reconhecimento.
-    Exceção: comandos em EXACT_MATCH_ONLY exigem match exato por segurança.
+
+    Comandos com match_case=true exigem que o texto seja idêntico a um dos
+    triggers (proteção contra ativação acidental de ações críticas).
+
+    Comandos com match_case=false (maioria) são ranqueados por semântica:
+      1. Match exato por substring → score 1.0 (prioridade máxima)
+      2. Fuzzy matching (SequenceMatcher) → score 0..1
+
+    O comando com maior score acima do limiar mínimo (0.5) é escolhido.
     """
     text_lower = text.lower().strip()
 
-    # Primeiro, tenta match exato (substring)
+    # ── Fase 1: comandos com match_case=true (exigem texto idêntico) ──
     for cmd in commands:
-        if cmd.get("tipo") in EXACT_MATCH_ONLY:
-            # Comandos críticos DEVEM ser exatos
-            for trigger in cmd["triggers"]:
-                if text_lower == trigger:
-                    return cmd
-        else:
-            # Outros comandos: substring match
-            for trigger in cmd["triggers"]:
-                if trigger in text_lower:
-                    if cmd.get("tipo") == "volume":
-                        nivel = _extract_number(text_lower)
-                        if nivel is not None:
-                            cmd = dict(cmd)
-                            cmd["_nivel"] = nivel
-                    elif cmd.get("tipo") == "reunioes_data":
-                        cmd = dict(cmd)
-                        cmd["_date_ref"] = text_lower
-                    elif cmd.get("tipo") == "eventos_data":
-                        cmd = dict(cmd)
-                        cmd["_date_ref"] = text_lower
-                    return cmd
+        if not cmd.get("match_case", False):
+            continue
+        for trigger in cmd["triggers"]:
+            if text_lower == trigger:
+                return _enrich_command(cmd, text_lower)
 
-    # Se não achou com substring, tenta fuzzy matching (similaridade)
+    # ── Fase 2: comandos com match_case=false (ranqueados por semântica) ──
     best_match = None
-    best_score = 0.5  # Limiar mínimo de 50% de similaridade
+    best_score = 0.5  # limiar mínimo de similaridade
 
     for cmd in commands:
-        if cmd.get("tipo") in EXACT_MATCH_ONLY:
-            # Pula comandos críticos no fuzzy matching
+        if cmd.get("match_case", False):
             continue
 
         for trigger in cmd["triggers"]:
-            # Calcula similaridade entre o texto e o trigger
-            score = SequenceMatcher(None, text_lower, trigger).ratio()
+            # Substring exata ganha score máximo
+            if trigger in text_lower:
+                score = 1.0
+            else:
+                score = SequenceMatcher(None, text_lower, trigger).ratio()
+
             if score > best_score:
                 best_score = score
                 best_match = cmd
+                if score == 1.0:
+                    break  # substring match, não precisa testar outros triggers
 
     if best_match:
-        if best_match.get("tipo") == "volume":
-            nivel = _extract_number(text_lower)
-            if nivel is not None:
-                best_match = dict(best_match)
-                best_match["_nivel"] = nivel
-        elif best_match.get("tipo") == "reunioes_data":
-            best_match = dict(best_match)
-            best_match["_date_ref"] = text_lower
-        elif best_match.get("tipo") == "eventos_data":
-            best_match = dict(best_match)
-            best_match["_date_ref"] = text_lower
-        return best_match
+        return _enrich_command(best_match, text_lower)
 
     return None
 
@@ -529,14 +542,16 @@ COMMAND_COOLDOWN = 2.0      # segundos de espera após executar um comando
 DEDUP_WINDOW = 4.0          # segundos para ignorar comando idêntico repetido
 
 
+KEEPALIVE_INTERVAL = 60     # segundos entre pings do microfone para mantê-lo ativo
+
+
 class JarvisAssistant:
     def __init__(self, commands):
         self.commands = commands
         self._command_count = 0
-        self._consecutive_errors = 0
-        self._MAX_ERRORS_BEFORE_RESET = 3
         self._last_command_type = None
         self._last_command_time = 0.0
+        self._last_listen_time = time.time()
         self._init_recognizer()
         self._init_microphone()
 
@@ -587,6 +602,21 @@ class JarvisAssistant:
             with self.mic as source:
                 self.recognizer.adjust_for_ambient_noise(source, duration=1)
 
+    def _keepalive(self):
+        """Toca brevemente o microfone se ficou ocioso por muito tempo.
+
+        Evita que o Windows libere o dispositivo de áudio por inatividade,
+        reduzindo a necessidade de reinicializações após períodos ociosos.
+        """
+        now = time.time()
+        if (now - self._last_listen_time) >= KEEPALIVE_INTERVAL:
+            try:
+                with self.mic as source:
+                    self.recognizer.adjust_for_ambient_noise(source, duration=0.3)
+                self._last_listen_time = now
+            except (OSError, IOError):
+                pass  # será tratado pelo loop principal
+
     def _flush_mic_buffer(self):
         """Descarta áudio residual do microfone após executar um comando.
 
@@ -616,7 +646,9 @@ class JarvisAssistant:
         indisponível (ex: após retorno de suspensão) para que o loop
         principal possa acionar a reinicialização.
         """
+        self._keepalive()
         with self.mic as source:
+            self._last_listen_time = time.time()
             try:
                 audio = self.recognizer.listen(
                     source,
@@ -677,10 +709,9 @@ class JarvisAssistant:
         self._safe_startup()
 
         while True:
+            had_command = False  # indica se havia comando em andamento ao falhar
             try:
                 text = self.listen_loop()
-                # Escuta bem-sucedida — zera contador de erros
-                self._consecutive_errors = 0
 
                 if text is None:
                     continue
@@ -704,8 +735,10 @@ class JarvisAssistant:
                     if self._is_duplicate_command(cmd_type):
                         print(f'  [JARVIS] Comando duplicado ignorado: "{cmd_type}"')
                         continue
+                    had_command = True
                     print(f"  [JARVIS] Executando: {cmd['descricao']}")
                     execute_command(cmd)
+                    had_command = False
                     self._mark_command_executed(cmd_type)
                     # Descarta áudio residual para evitar re-execução
                     self._flush_mic_buffer()
@@ -720,40 +753,21 @@ class JarvisAssistant:
                 speak("Encerrando. Até a próxima senhor.")
                 break
 
-            except (OSError, IOError) as e:
-                # Erro de dispositivo de áudio — típico após suspensão/hibernação
-                self._consecutive_errors += 1
-                print(f"  [JARVIS] Erro de áudio ({self._consecutive_errors}x): {e}")
-
-                if self._consecutive_errors >= self._MAX_ERRORS_BEFORE_RESET:
-                    print("  [JARVIS] Muitos erros consecutivos — reinicializando áudio...")
-                    self._reinit_audio()
-                    try:
-                        self.calibrate()
-                        self._consecutive_errors = 0
-                        print("  [JARVIS] Recuperado com sucesso. Voltando a escutar.")
-                    except Exception as cal_err:
-                        print(f"  [JARVIS] Falha na recalibração: {cal_err}")
-                        print("  [JARVIS] Aguardando 10s antes de tentar novamente...")
-                        time.sleep(10)
-                else:
-                    time.sleep(2)
-
             except Exception as e:
-                # Qualquer outro erro inesperado — não deixa o programa morrer
-                self._consecutive_errors += 1
-                print(f"  [JARVIS] Erro inesperado ({self._consecutive_errors}x): {e}")
-
-                if self._consecutive_errors >= self._MAX_ERRORS_BEFORE_RESET:
-                    print("  [JARVIS] Tentando recuperação completa...")
-                    self._reinit_audio()
-                    try:
-                        self.calibrate()
-                        self._consecutive_errors = 0
-                    except Exception:
-                        time.sleep(10)
-                else:
-                    time.sleep(2)
+                print(f"  [JARVIS] Erro detectado: {e}")
+                print("  [JARVIS] Reinicializando áudio...")
+                self._reinit_audio()
+                try:
+                    self.calibrate()
+                    if had_command:
+                        speak("Senhor, tive uma falha mas já me recuperei. "
+                              "Pode repetir o comando por favor?")
+                    else:
+                        speak("Reinicialização concluída senhor. Estou de volta.")
+                except Exception:
+                    # Áudio ainda não disponível (ex: PC ainda acordando)
+                    print("  [JARVIS] Áudio indisponível — tentando novamente em 5s...")
+                    time.sleep(5)
 
 
 # ─────────────────────────────────────────
