@@ -525,20 +525,52 @@ def listar_comandos(commands):
 # RECONHECIMENTO DE VOZ
 # ─────────────────────────────────────────
 
+COMMAND_COOLDOWN = 2.0      # segundos de espera após executar um comando
+DEDUP_WINDOW = 4.0          # segundos para ignorar comando idêntico repetido
+
+
 class JarvisAssistant:
     def __init__(self, commands):
         self.commands = commands
+        self._command_count = 0
+        self._consecutive_errors = 0
+        self._MAX_ERRORS_BEFORE_RESET = 3
+        self._last_command_type = None
+        self._last_command_time = 0.0
+        self._init_recognizer()
+        self._init_microphone()
+
+    def _init_recognizer(self):
+        """Inicializa (ou reinicializa) o recognizer."""
         self.recognizer = sr.Recognizer()
         self.recognizer.dynamic_energy_threshold = True
         self.recognizer.pause_threshold = COMMAND_PAUSE
-        self.recognizer.phrase_threshold = 0.2      # sensibilidade p/ início de fala
-        self.recognizer.non_speaking_duration = 0.4  # silêncio mínimo entre palavras
-        self._command_count = 0
+        self.recognizer.phrase_threshold = 0.2
+        self.recognizer.non_speaking_duration = 0.4
 
+    def _init_microphone(self):
+        """Cria (ou recria) o objeto Microphone."""
         if AUDIO_DEVICE is not None:
             self.mic = sr.Microphone(device_index=AUDIO_DEVICE, sample_rate=SAMPLE_RATE)
         else:
             self.mic = sr.Microphone(sample_rate=SAMPLE_RATE)
+
+    def _reinit_audio(self):
+        """Reinicializa todo o subsistema de áudio após falha (ex: retorno de suspensão)."""
+        print("  [JARVIS] Reinicializando subsistema de áudio...")
+        # Reinicializa pygame mixer (dispositivo de saída)
+        try:
+            pygame.mixer.quit()
+        except Exception:
+            pass
+        try:
+            pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=1024)
+        except Exception as e:
+            print(f"  [JARVIS] Erro ao reiniciar mixer: {e}")
+        # Recria microfone e recognizer (dispositivo de entrada)
+        self._init_recognizer()
+        self._init_microphone()
+        print("  [JARVIS] Subsistema de áudio reinicializado.")
 
     def calibrate(self):
         """Calibra o microfone para o ruido ambiente."""
@@ -555,8 +587,35 @@ class JarvisAssistant:
             with self.mic as source:
                 self.recognizer.adjust_for_ambient_noise(source, duration=1)
 
+    def _flush_mic_buffer(self):
+        """Descarta áudio residual do microfone após executar um comando.
+
+        Abre o microfone brevemente para consumir qualquer áudio que ficou
+        no buffer do PyAudio (eco da resposta TTS, reverberação, etc.),
+        evitando que o próximo listen() capture áudio antigo.
+        """
+        with self.mic as source:
+            self.recognizer.adjust_for_ambient_noise(source, duration=COMMAND_COOLDOWN)
+
+    def _is_duplicate_command(self, cmd_type):
+        """Verifica se o mesmo tipo de comando foi executado há pouco tempo."""
+        now = time.time()
+        if cmd_type == self._last_command_type and (now - self._last_command_time) < DEDUP_WINDOW:
+            return True
+        return False
+
+    def _mark_command_executed(self, cmd_type):
+        """Registra o comando executado para dedup."""
+        self._last_command_type = cmd_type
+        self._last_command_time = time.time()
+
     def listen_loop(self):
-        """Escuta uma frase completa e retorna o texto transcrito."""
+        """Escuta uma frase completa e retorna o texto transcrito.
+
+        Levanta OSError / Exception se o dispositivo de áudio estiver
+        indisponível (ex: após retorno de suspensão) para que o loop
+        principal possa acionar a reinicialização.
+        """
         with self.mic as source:
             try:
                 audio = self.recognizer.listen(
@@ -590,20 +649,38 @@ class JarvisAssistant:
         # Wake word foi dita sozinha, sem comando
         return ""
 
+    def _safe_startup(self):
+        """Calibra e anuncia que está online. Retenta em caso de falha de áudio."""
+        while True:
+            try:
+                self.calibrate()
+                speak("Sistemas online. Aguardando suas ordens senhor.")
+                return
+            except (OSError, Exception) as e:
+                print(f"  [JARVIS] Falha na inicialização de áudio: {e}")
+                print("  [JARVIS] Tentando novamente em 5 segundos...")
+                time.sleep(5)
+                self._reinit_audio()
+
     def run(self):
-        """Loop principal — escuta frases completas com wake word + comando."""
+        """Loop principal — escuta frases completas com wake word + comando.
+
+        Resiliente a suspensão/hibernação: detecta falhas no dispositivo de
+        áudio e reinicializa automaticamente, mantendo o Jarvis sempre
+        disponível enquanto o computador estiver ligado.
+        """
         print('\n  [JARVIS] Online - diga "Jarvis" seguido do comando na mesma frase.')
         print('  [JARVIS] Exemplo: "Jarvis, entrar em daily"')
         print("  [JARVIS] Ctrl+C para encerrar.\n")
 
         listar_comandos(self.commands)
-        self.calibrate()
-
-        speak("Sistemas online. Aguardando suas ordens senhor.")
+        self._safe_startup()
 
         while True:
             try:
                 text = self.listen_loop()
+                # Escuta bem-sucedida — zera contador de erros
+                self._consecutive_errors = 0
 
                 if text is None:
                     continue
@@ -623,8 +700,15 @@ class JarvisAssistant:
 
                 cmd = match_command(command_text, self.commands)
                 if cmd:
+                    cmd_type = cmd.get("tipo", "")
+                    if self._is_duplicate_command(cmd_type):
+                        print(f'  [JARVIS] Comando duplicado ignorado: "{cmd_type}"')
+                        continue
                     print(f"  [JARVIS] Executando: {cmd['descricao']}")
                     execute_command(cmd)
+                    self._mark_command_executed(cmd_type)
+                    # Descarta áudio residual para evitar re-execução
+                    self._flush_mic_buffer()
                 else:
                     print(f'  [JARVIS] Comando nao reconhecido: "{command_text}"')
                     speak(random.choice(UNKNOWN_COMMAND_RESPONSES))
@@ -635,6 +719,41 @@ class JarvisAssistant:
             except KeyboardInterrupt:
                 speak("Encerrando. Até a próxima senhor.")
                 break
+
+            except (OSError, IOError) as e:
+                # Erro de dispositivo de áudio — típico após suspensão/hibernação
+                self._consecutive_errors += 1
+                print(f"  [JARVIS] Erro de áudio ({self._consecutive_errors}x): {e}")
+
+                if self._consecutive_errors >= self._MAX_ERRORS_BEFORE_RESET:
+                    print("  [JARVIS] Muitos erros consecutivos — reinicializando áudio...")
+                    self._reinit_audio()
+                    try:
+                        self.calibrate()
+                        self._consecutive_errors = 0
+                        print("  [JARVIS] Recuperado com sucesso. Voltando a escutar.")
+                    except Exception as cal_err:
+                        print(f"  [JARVIS] Falha na recalibração: {cal_err}")
+                        print("  [JARVIS] Aguardando 10s antes de tentar novamente...")
+                        time.sleep(10)
+                else:
+                    time.sleep(2)
+
+            except Exception as e:
+                # Qualquer outro erro inesperado — não deixa o programa morrer
+                self._consecutive_errors += 1
+                print(f"  [JARVIS] Erro inesperado ({self._consecutive_errors}x): {e}")
+
+                if self._consecutive_errors >= self._MAX_ERRORS_BEFORE_RESET:
+                    print("  [JARVIS] Tentando recuperação completa...")
+                    self._reinit_audio()
+                    try:
+                        self.calibrate()
+                        self._consecutive_errors = 0
+                    except Exception:
+                        time.sleep(10)
+                else:
+                    time.sleep(2)
 
 
 # ─────────────────────────────────────────
