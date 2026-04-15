@@ -4,6 +4,7 @@ Fetch meetings with Google Meet links from Google Calendar API.
 """
 
 import os
+import sys
 import json
 import datetime
 from pathlib import Path
@@ -11,8 +12,10 @@ from pathlib import Path
 
 def _get_config_dir():
     """Retorna o diretório de configuração."""
-    # Procura em relação ao diretório do projeto (parent do src/)
-    project_root = Path(__file__).parent.parent.parent
+    if getattr(sys, "frozen", False):
+        project_root = Path(sys._MEIPASS)
+    else:
+        project_root = Path(__file__).parent.parent.parent
     config_dir = project_root / "config"
     return config_dir
 

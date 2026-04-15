@@ -44,7 +44,10 @@ LANGUAGE = "pt-BR"
 VOICE = "pt-BR-AntonioNeural"  # voz masculina brasileira (edge-tts)
 RECALIBRATE_EVERY = 5       # recalibrar microfone a cada N comandos
 
-_PROJECT_ROOT = Path(__file__).parent.parent.parent
+if getattr(sys, "frozen", False):
+    _PROJECT_ROOT = Path(sys._MEIPASS)
+else:
+    _PROJECT_ROOT = Path(__file__).parent.parent.parent
 BASE_DIR = _PROJECT_ROOT / "config"
 COMMANDS_FILE = BASE_DIR / "commands.json"
 
@@ -351,6 +354,17 @@ def action_eventos_data(cmd):
     speak(msg)
 
 
+def action_executar_comando(cmd):
+    """Executa um comando no terminal e depois confirma."""
+    comando = cmd.get("comando", "")
+    subprocess.Popen(
+        comando,
+        shell=True,
+        creationflags=0x08000000,  # CREATE_NO_WINDOW
+    )
+    _speak_response(cmd, "Feito senhor.")
+
+
 def action_bloquear_pc(cmd):
     """Bloqueia o computador (Windows + L)."""
     _speak_response(cmd, "Bloqueando o computador senhor.")
@@ -393,6 +407,7 @@ ACTION_HANDLERS = {
     "listar_reunioes_hoje": action_listar_reunioes_hoje,
     "reunioes_data": action_reunioes_data,
     "eventos_data": action_eventos_data,
+    "executar_comando": action_executar_comando,
     "bloquear_pc": action_bloquear_pc,
     "desligar_pc": action_desligar_pc,
     "suspender_pc": action_suspender_pc,
@@ -743,7 +758,6 @@ class JarvisAssistant:
         self._safe_startup()
 
         while True:
-            had_command = False  # indica se havia comando em andamento ao falhar
             try:
                 text = self.listen_loop()
 
@@ -769,10 +783,8 @@ class JarvisAssistant:
                     if self._is_duplicate_command(cmd_type):
                         print(f'  [JARVIS] Comando duplicado ignorado: "{cmd_type}"')
                         continue
-                    had_command = True
                     print(f"  [JARVIS] Executando: {cmd['descricao']}")
                     execute_command(cmd)
-                    had_command = False
                     self._mark_command_executed(cmd_type)
                     # Descarta áudio residual para evitar re-execução
                     self._flush_mic_buffer()
@@ -789,18 +801,14 @@ class JarvisAssistant:
 
             except Exception as e:
                 print(f"  [JARVIS] Erro detectado: {e}")
-                # Loop de recuperação: retenta até o áudio voltar
+                # Loop de recuperação silenciosa: retenta até o áudio voltar
                 recovered = False
                 for attempt in range(1, 13):  # até ~1 min de tentativas
                     print(f"  [JARVIS] Tentativa de recuperação {attempt}/12...")
                     self._reinit_audio()
                     try:
                         self.calibrate()
-                        if had_command:
-                            speak("Senhor, tive uma falha mas já me recuperei. "
-                                  "Pode repetir o comando por favor?")
-                        else:
-                            speak("Reinicialização concluída senhor. Estou de volta.")
+                        print("  [JARVIS] Recuperação concluída com sucesso.")
                         recovered = True
                         break
                     except Exception as retry_err:

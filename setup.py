@@ -45,5 +45,8 @@ setup(
         "console_scripts": [
             "jarvis=jarvis.app:main",
         ],
+        "gui_scripts": [
+            "jarvis-gui=jarvis.app:main",
+        ],
     },
 )

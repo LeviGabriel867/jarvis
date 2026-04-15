@@ -4,6 +4,8 @@
 
 ```
 jarvis/
+├── Jarvis.bat               # Main launcher (double-click to start)
+├── Jarvis.pyw               # Python entry point (no console)
 ├── src/jarvis/              # Main package
 │   ├── __init__.py
 │   ├── app.py              # Voice assistant application
@@ -13,10 +15,6 @@ jarvis/
 │   ├── config.json         # Settings
 │   ├── config.example.json # Configuration template
 │   └── credentials/        # OAuth2 credentials (not in git)
-├── scripts/                 # Entry points
-│   ├── run.py              # Python launcher
-│   ├── run.bat             # Windows launcher
-│   └── run_hidden.vbs      # Windows hidden launcher
 ├── docs/                    # Documentation
 ├── README.md               # Project documentation
 ├── requirements.txt        # Python dependencies
@@ -50,24 +48,17 @@ jarvis/
 
 ## Running the Application
 
-### Option 1: Python launcher
-```bash
-python scripts/run.py
-```
+### Option 1: Double-click launcher
+Double-click `Jarvis.bat` in the project root.
 
-### Option 2: Windows batch file
+### Option 2: Python (no console)
 ```bash
-scripts/run.bat
-```
-
-### Option 3: Windows hidden launcher
-```bash
-scripts/run_hidden.vbs
+python Jarvis.pyw
 ```
 
 ### List available commands
 ```bash
-python scripts/run.py --list
+python -c "import sys; sys.path.insert(0,'src'); from jarvis.app import main; sys.argv.append('--listar'); main()"
 ```
 
 ## Adding New Commands

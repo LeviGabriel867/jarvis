@@ -143,11 +143,35 @@
   },
   {
     "tipo": "reunioes_data",
-    "triggers": ["reuniões de amanhã", "reuniões amanhã", "agenda amanhã", "reuniões de segunda", "reuniões de terça", "reuniões de quarta", "reuniões de quinta", "reuniões de sexta", "reuniões de sábado", "reuniões de domingo", "reuniões da próxima", "reuniões próxima semana", "reuniões semana que vem", "dia 15", "reuniões do dia"],
+    "triggers": ["reuniões de amanhã", "reuniões amanhã", "agenda amanhã", "reuniões de segunda", "reuniões de terça", "reuniões de quarta", "reuniões de quinta", "reuniões de sexta", "reuniões de sábado", "reuniões de domingo", "reuniões da próxima", "reuniões próxima semana", "reuniões semana que vem", "dia 15", "reuniões do dia",
+  "quais as reuniões de amanhã", "que reuniões eu tenho amanhã"],
     "descricao": "Lista reuniões com videoconferência para a data especificada",
     "match_case": false,
     "respostas": [
       "Consultando sua agenda para essa data senhor."
+    ]
+  },
+  {
+    "tipo": "eventos_data",
+    "triggers": [
+      "eventos de hoje", "compromissos de hoje", "o que tenho hoje", "meus compromissos",
+      "eventos de amanhã", "compromissos de amanhã", "o que tenho amanhã",
+      "eventos de segunda", "eventos de terça", "eventos de quarta", "eventos de quinta", "eventos de sexta", "eventos de sábado", "eventos de domingo",
+      "compromissos de segunda", "compromissos de terça", "compromissos de quarta", "compromissos de quinta", "compromissos de sexta",
+      "eventos da próxima", "compromissos da próxima",
+      "eventos do dia", "compromissos do dia",
+      "quais meus eventos", "quais meus compromissos",
+      "quais os eventos de amanhã", "quais os compromissos de amanhã",
+      "agenda completa de hoje", "agenda completa de amanhã",
+      "todos os eventos de hoje", "todos os compromissos de hoje",
+      "todos os eventos de amanhã", "todos os compromissos de amanhã"
+    ],
+    "descricao": "Lista todos os eventos e compromissos (com ou sem videoconferência) para a data especificada",
+    "match_case": false,
+    "respostas": [
+      "Consultando todos os seus compromissos para essa data senhor.",
+      "Verificando sua agenda completa senhor.",
+      "Um momento, vou buscar todos os seus eventos senhor."
     ]
   },
   {
@@ -160,6 +184,34 @@
       "Colocando o computador para dormir senhor.",
       "Entrando em modo de suspensão senhor. Até logo.",
       "Computador entrando em modo dormir senhor."
+    ]
+  },
+  {
+    "tipo": "executar_comando",
+    "triggers": ["abrir cursor", "abrir o cursor", "abre o cursor", "abra o cursor", "iniciar cursor", "iniciar o cursor", "abrir editor cursor", "abre cursor"],
+    "descricao": "Abre o editor Cursor",
+    "match_case": false,
+    "comando": "cursor",
+    "respostas": [
+      "Abrindo o Cursor senhor.",
+      "Cursor aberto senhor.",
+      "Pronto, Cursor na tela senhor.",
+      "Iniciando o Cursor para você senhor.",
+      "Editor Cursor pronto senhor."
+    ]
+  },
+  {
+    "tipo": "executar_comando",
+    "triggers": ["abrir vs code", "abrir o vs code", "abre o vs code", "abra o vs code", "abrir vscode", "abrir visual studio", "abrir o visual studio", "abre o visual studio", "abra o visual studio", "abrir visual studio code", "abrir o visual studio code", "iniciar vs code", "iniciar visual studio", "abre vs code", "abre visual studio", "abre vscode"],
+    "descricao": "Abre o Visual Studio Code",
+    "match_case": false,
+    "comando": "code",
+    "respostas": [
+      "Abrindo o VS Code senhor.",
+      "Visual Studio Code aberto senhor.",
+      "Pronto, VS Code na tela senhor.",
+      "Iniciando o Visual Studio Code para você senhor.",
+      "VS Code pronto senhor."
     ]
   },
   {

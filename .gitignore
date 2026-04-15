@@ -49,6 +49,9 @@ config/credentials/credentials.json
 config/credentials/token.json
 config/config.local.json
 
+# PyInstaller
+*.spec
+
 # Temporary files
 *.tmp
 *.log

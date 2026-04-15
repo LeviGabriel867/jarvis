@@ -10,12 +10,10 @@ Assistente de voz local para Windows. Escuta a wake word **"Jarvis"**, responde 
 # 1. Instalar dependências
 pip install -r requirements.txt
 
-# 2. Usar um dos launchers (ou executar pelo Python)
-python scripts/run.py         # Python launcher
+# 2. Iniciar o Jarvis (clique duplo ou via terminal)
+Jarvis.bat                    # Clique duplo para iniciar (com console)
 # ou
-scripts/run.bat               # Windows com console
-# ou
-scripts/run_hidden.vbs        # Windows silencioso
+python Jarvis.pyw             # Direto pelo Python (sem console)
 ```
 
 **Nota**: Na primeira vez, você será solicitado a autenticar com Google Calendar (caso queira usar recursos de agenda).
@@ -26,6 +24,8 @@ scripts/run_hidden.vbs        # Windows silencioso
 
 ```
 jarvis/
+├── Jarvis.bat               # Executável principal (clique duplo para iniciar)
+├── Jarvis.pyw               # Entry point Python (sem console)
 ├── src/jarvis/              # Código-fonte principal
 │   ├── __init__.py
 │   ├── app.py              # Aplicação principal (assistente de voz + TTS)
@@ -37,10 +37,6 @@ jarvis/
 │   └── credentials/        # Credenciais OAuth2 (não versionado)
 │       ├── credentials.json # (você configura) Credenciais OAuth2 do Google Cloud
 │       └── token.json      # (gerado automaticamente) Token de autenticação
-├── scripts/                 # Scripts de inicialização
-│   ├── run.py              # Launcher Python
-│   ├── run.bat             # Launcher Windows (com console)
-│   └── run_hidden.vbs      # Launcher Windows (modo oculto)
 ├── docs/                    # Documentação
 │   └── CONTRIBUTING.md     # Guia de contribuição
 ├── .gitignore              # Git ignore rules
@@ -342,13 +338,11 @@ Se o microfone padrão não funcionar, configure `AUDIO_DEVICE` em `src/jarvis/a
 
 ### Passo 4 - Iniciar
 
-```bash
-python scripts/run.py
-```
+Clique duplo em **`Jarvis.bat`** na raiz do projeto, ou via terminal:
 
-Ou via launchers:
-- **Windows com console**: `scripts/run.bat`
-- **Windows silencioso**: `scripts/run_hidden.vbs`
+```bash
+python Jarvis.pyw
+```
 
 ### Passo 5 - Usar
 
